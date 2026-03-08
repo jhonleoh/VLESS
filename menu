@@ -1,0 +1,1749 @@
+#!/bin/bash
+
+###############################################################################
+# Auto-Install to PATH
+###############################################################################
+
+# Check if script is in PATH
+SCRIPT_NAME="menu"
+SCRIPT_PATH="$(readlink -f "$0")"
+INSTALL_PATH="/usr/local/bin/$SCRIPT_NAME"
+
+# If not running from /usr/local/bin, offer to install
+if [[ "$SCRIPT_PATH" != "$INSTALL_PATH" ]] && [[ ! -L "$INSTALL_PATH" ]]; then
+    # Check if running as root
+    if [[ $EUID -eq 0 ]]; then
+        echo "[i] Installing 'menu' command to system PATH..."
+        cp "$SCRIPT_PATH" "$INSTALL_PATH"
+        chmod +x "$INSTALL_PATH"
+        echo "[✓] Installation complete!"
+        echo "[i] You can now type 'menu' from anywhere!"
+        echo ""
+        sleep 2
+        # Re-execute from installed location
+        exec "$INSTALL_PATH" "$@"
+    else
+        echo "[!] First-time setup: Installing 'menu' command..."
+        echo "[i] This requires root privileges"
+        echo ""
+        if command -v sudo &> /dev/null; then
+            sudo cp "$SCRIPT_PATH" "$INSTALL_PATH"
+            sudo chmod +x "$INSTALL_PATH"
+            echo "[✓] Installation complete!"
+            echo "[i] You can now type 'menu' from anywhere!"
+            echo ""
+            sleep 2
+            # Re-execute from installed location with sudo
+            exec sudo "$INSTALL_PATH" "$@"
+        else
+            echo "[!] sudo not available. Please run as root:"
+            echo "    su -"
+            echo "    bash $SCRIPT_PATH"
+            exit 1
+        fi
+    fi
+fi
+
+# If not root, re-execute with sudo
+if [[ $EUID -ne 0 ]]; then
+    if command -v sudo &> /dev/null; then
+        exec sudo "$0" "$@"
+    else
+        echo "[!] This script requires root privileges"
+        echo "[!] Please run: su - or install sudo"
+        exit 1
+    fi
+fi
+
+###############################################################################
+# VPN Gaming Autoscript v2.0 - All-in-One Edition
+# Optimized TLS-based VPN installation for low-ping gaming
+# Supports: Trojan-GFW and Xray XTLS-Reality
+# OS: Debian 10/11/12/13, Ubuntu 20.04/22.04/24.04
+# NEW: Multi-IP support for floating IPs
+###############################################################################
+
+# Color definitions
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Global variables
+SCRIPT_VERSION="2.0"
+INSTALL_DIR="/opt/vpn-gaming"
+CONFIG_DIR="/etc/vpn-gaming"
+LOG_FILE="/var/log/vpn-gaming-install.log"
+CLIENT_DIR="$HOME/vpn-clients"
+
+###############################################################################
+# Utility Functions
+###############################################################################
+
+print_success() {
+    echo -e "${GREEN}[✓]${NC} $1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: $1" >> "$LOG_FILE"
+}
+
+print_error() {
+    echo -e "${RED}[✗]${NC} $1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $1" >> "$LOG_FILE"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: $1" >> "$LOG_FILE"
+}
+
+print_info() {
+    echo -e "${BLUE}[i]${NC} $1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: $1" >> "$LOG_FILE"
+}
+
+print_prompt() {
+    echo -e "${CYAN}[?]${NC} $1"
+}
+
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        print_error "This script must be run as root"
+        exit 1
+    fi
+}
+
+check_os() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS=$ID
+        VER=$VERSION_ID
+        
+        if [[ "$OS" == "debian" ]] || [[ "$OS" == "ubuntu" ]]; then
+            print_success "Detected $OS $VER"
+            return 0
+        else
+            print_error "Unsupported OS: $OS"
+            print_info "This script only supports Debian and Ubuntu"
+            exit 1
+        fi
+    else
+        print_error "Cannot detect OS"
+        exit 1
+    fi
+}
+
+check_internet() {
+    print_info "Checking internet connectivity..."
+    if ping -c 1 8.8.8.8 &> /dev/null; then
+        print_success "Internet connection OK"
+        return 0
+    else
+        print_error "No internet connection"
+        exit 1
+    fi
+}
+
+generate_random_password() {
+    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32
+}
+
+generate_uuid() {
+    cat /proc/sys/kernel/random/uuid
+}
+
+generate_short_id() {
+    tr -dc 'a-f0-9' < /dev/urandom | head -c ${1:-8}
+}
+
+get_all_ips() {
+    # Get all IPv4 addresses on the server
+    ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1'
+}
+
+get_main_ip() {
+    # Get the main public IP with multiple fallbacks
+    local ip
+    
+    # Try multiple services with timeout
+    ip=$(curl -s --connect-timeout 5 --max-time 10 ifconfig.me 2>/dev/null)
+    if [[ -n "$ip" ]] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$ip"
+        return 0
+    fi
+    
+    ip=$(curl -s --connect-timeout 5 --max-time 10 icanhazip.com 2>/dev/null)
+    if [[ -n "$ip" ]] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$ip"
+        return 0
+    fi
+    
+    ip=$(curl -s --connect-timeout 5 --max-time 10 ipinfo.io/ip 2>/dev/null)
+    if [[ -n "$ip" ]] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$ip"
+        return 0
+    fi
+    
+    ip=$(curl -s --connect-timeout 5 --max-time 10 api.ipify.org 2>/dev/null)
+    if [[ -n "$ip" ]] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$ip"
+        return 0
+    fi
+    
+    # Fallback: get first non-localhost IP from server
+    ip=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
+    if [[ -n "$ip" ]]; then
+        echo "$ip"
+        return 0
+    fi
+    
+    # Last resort
+    echo "127.0.0.1"
+}
+
+###############################################################################
+# System Optimization Functions
+###############################################################################
+
+enable_bbr() {
+    print_info "Enabling TCP BBR congestion control..."
+    
+    # Check if BBR is already enabled
+    if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then
+        print_success "TCP BBR already enabled"
+        return 0
+    fi
+    
+    # Check kernel version (BBR requires 4.9+)
+    kernel_version=$(uname -r | cut -d. -f1)
+    if [[ $kernel_version -lt 4 ]]; then
+        print_warning "Kernel version too old for BBR (requires 4.9+)"
+        return 1
+    fi
+    
+    # Enable BBR
+    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    sysctl -p > /dev/null 2>&1
+    
+    # Verify
+    if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then
+        print_success "TCP BBR enabled successfully"
+    else
+        print_error "Failed to enable TCP BBR"
+        return 1
+    fi
+}
+
+optimize_network() {
+    print_info "Applying network optimizations for gaming..."
+    
+    cat >> /etc/sysctl.conf << EOF
+
+# Gaming optimizations
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_slow_start_after_idle=0
+net.ipv4.tcp_no_metrics_save=1
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.ipv4.tcp_rmem=4096 87380 16777216
+net.ipv4.tcp_wmem=4096 65536 16777216
+net.ipv4.udp_rmem_min=8192
+net.ipv4.udp_wmem_min=8192
+net.core.netdev_max_backlog=5000
+EOF
+    
+    sysctl -p > /dev/null 2>&1
+    print_success "Network optimizations applied"
+}
+
+increase_file_limits() {
+    print_info "Increasing file descriptor limits..."
+    
+    cat >> /etc/security/limits.conf << EOF
+* soft nofile 51200
+* hard nofile 51200
+* soft nproc 51200
+* hard nproc 51200
+EOF
+    
+    ulimit -n 51200
+    print_success "File descriptor limits increased"
+}
+
+###############################################################################
+# Trojan-GFW Installation
+###############################################################################
+
+install_trojan() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Trojan-GFW Installation Module      ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Check if already installed
+    if systemctl is-active --quiet trojan; then
+        print_warning "Trojan is already installed and running"
+        read -p "Do you want to reinstall? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+        systemctl stop trojan
+    fi
+    
+    # Get domain name
+    print_prompt "Enter your domain name (or press Enter to use server IP):"
+    read -r DOMAIN
+    
+    if [[ -z "$DOMAIN" ]]; then
+        DOMAIN=$(get_main_ip)
+        print_info "Using server IP: $DOMAIN"
+        USE_CERT=false
+    else
+        print_info "Using domain: $DOMAIN"
+        USE_CERT=true
+    fi
+    
+    # Install dependencies
+    print_info "Installing dependencies..."
+    apt update > /dev/null 2>&1
+    apt install -y nginx certbot python3-certbot-nginx curl jq qrencode xz-utils > /dev/null 2>&1
+    print_success "Dependencies installed"
+    
+    # Configure Nginx
+    if [[ "$USE_CERT" == true ]]; then
+        print_info "Configuring Nginx..."
+        
+        cat > /etc/nginx/sites-available/default << EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN;
+    root /var/www/html;
+    index index.html;
+    
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOF
+        
+        # Create simple index page
+        cat > /var/www/html/index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Welcome</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+        h1 { color: #333; }
+    </style>
+</head>
+<body>
+    <h1>Welcome to My Server</h1>
+    <p>This is a simple web server.</p>
+</body>
+</html>
+EOF
+        
+        systemctl restart nginx
+        print_success "Nginx configured"
+        
+        # Obtain SSL certificate
+        print_info "Obtaining SSL certificate from Let's Encrypt..."
+        print_warning "Make sure your domain points to this server IP: $(get_main_ip)"
+        read -p "Press Enter to continue..."
+        
+        certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
+        
+        if [[ $? -eq 0 ]]; then
+            print_success "SSL certificate obtained"
+            chmod +rx /etc/letsencrypt/live
+            chmod +rx /etc/letsencrypt/archive
+            chmod -R +r /etc/letsencrypt/archive/"$DOMAIN"
+        else
+            print_error "Failed to obtain SSL certificate"
+            print_info "Falling back to IP-based installation"
+            USE_CERT=false
+            DOMAIN=$(get_main_ip)
+        fi
+    fi
+    
+    # Download and install Trojan
+    print_info "Downloading Trojan..."
+    
+    TROJAN_VERSION=$(curl -s https://api.github.com/repos/trojan-gfw/trojan/releases/latest | jq -r '.tag_name' | sed 's/v//')
+    TROJAN_URL="https://github.com/trojan-gfw/trojan/releases/download/v${TROJAN_VERSION}/trojan-${TROJAN_VERSION}-linux-amd64.tar.xz"
+    
+    cd /tmp
+    wget -q "$TROJAN_URL" -O trojan.tar.xz
+    tar -xf trojan.tar.xz
+    
+    mkdir -p /usr/local/bin
+    mkdir -p /usr/local/etc/trojan
+    
+    cp trojan/trojan /usr/local/bin/
+    chmod +x /usr/local/bin/trojan
+    
+    rm -rf trojan trojan.tar.xz
+    
+    print_success "Trojan binary installed"
+    
+    # Generate password
+    TROJAN_PASSWORD=$(generate_random_password)
+    
+    # Create configuration
+    print_info "Creating Trojan configuration..."
+    
+    if [[ "$USE_CERT" == true ]]; then
+        cat > /usr/local/etc/trojan/config.json << EOF
+{
+    "run_type": "server",
+    "local_addr": "0.0.0.0",
+    "local_port": 443,
+    "remote_addr": "127.0.0.1",
+    "remote_port": 80,
+    "password": [
+        "$TROJAN_PASSWORD"
+    ],
+    "log_level": 1,
+    "ssl": {
+        "cert": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem",
+        "key": "/etc/letsencrypt/live/$DOMAIN/privkey.pem",
+        "key_password": "",
+        "cipher": "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384",
+        "cipher_tls13": "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384",
+        "prefer_server_cipher": true,
+        "alpn": [
+            "http/1.1",
+            "h2"
+        ],
+        "alpn_port_override": {
+            "h2": 81
+        },
+        "reuse_session": true,
+        "session_ticket": false,
+        "session_timeout": 600,
+        "plain_http_response": "",
+        "curves": "",
+        "dhparam": ""
+    },
+    "tcp": {
+        "prefer_ipv4": false,
+        "no_delay": true,
+        "keep_alive": true,
+        "reuse_port": false,
+        "fast_open": true,
+        "fast_open_qlen": 20
+    },
+    "mysql": {
+        "enabled": false
+    }
+}
+EOF
+    else
+        # Self-signed certificate for IP-based installation
+        print_info "Generating self-signed certificate..."
+        openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+            -subj "/C=US/ST=State/L=City/O=Organization/CN=$DOMAIN" \
+            -keyout /usr/local/etc/trojan/private.key \
+            -out /usr/local/etc/trojan/certificate.crt 2>/dev/null
+        
+        cat > /usr/local/etc/trojan/config.json << EOF
+{
+    "run_type": "server",
+    "local_addr": "0.0.0.0",
+    "local_port": 443,
+    "remote_addr": "127.0.0.1",
+    "remote_port": 80,
+    "password": [
+        "$TROJAN_PASSWORD"
+    ],
+    "log_level": 1,
+    "ssl": {
+        "cert": "/usr/local/etc/trojan/certificate.crt",
+        "key": "/usr/local/etc/trojan/private.key",
+        "key_password": "",
+        "cipher": "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384",
+        "cipher_tls13": "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384",
+        "prefer_server_cipher": true,
+        "alpn": [
+            "http/1.1",
+            "h2"
+        ],
+        "reuse_session": true,
+        "session_ticket": false,
+        "session_timeout": 600,
+        "plain_http_response": "",
+        "curves": "",
+        "dhparam": ""
+    },
+    "tcp": {
+        "prefer_ipv4": false,
+        "no_delay": true,
+        "keep_alive": true,
+        "reuse_port": false,
+        "fast_open": true,
+        "fast_open_qlen": 20
+    },
+    "mysql": {
+        "enabled": false
+    }
+}
+EOF
+    fi
+    
+    print_success "Trojan configuration created"
+    
+    # Create systemd service
+    print_info "Creating systemd service..."
+    
+    cat > /etc/systemd/system/trojan.service << EOF
+[Unit]
+Description=Trojan-GFW Server
+After=network.target
+
+[Service]
+Type=simple
+PIDFile=/usr/local/etc/trojan/trojan.pid
+ExecStart=/usr/local/bin/trojan -c /usr/local/etc/trojan/config.json
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=51200
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    systemctl daemon-reload
+    systemctl enable trojan > /dev/null 2>&1
+    systemctl start trojan
+    
+    if systemctl is-active --quiet trojan; then
+        print_success "Trojan service started successfully"
+    else
+        print_error "Failed to start Trojan service"
+        return 1
+    fi
+    
+    # Save credentials
+    mkdir -p "$CLIENT_DIR"
+    
+    cat > "$CLIENT_DIR/trojan-credentials.txt" << EOF
+Trojan-GFW Server Information
+==============================
+Server: $DOMAIN
+Port: 443
+Password: $TROJAN_PASSWORD
+SNI: $DOMAIN
+Allow Insecure: $([ "$USE_CERT" == true ] && echo "false" || echo "true")
+
+Connection URI:
+trojan://$TROJAN_PASSWORD@$DOMAIN:443#TrojanServer
+EOF
+    
+    # Generate QR code
+    qrencode -t ANSIUTF8 "trojan://$TROJAN_PASSWORD@$DOMAIN:443#TrojanServer" > "$CLIENT_DIR/trojan-qr.txt"
+    
+    # Display information
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Trojan Installation Complete!       ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Server:${NC} $DOMAIN"
+    echo -e "${CYAN}Port:${NC} 443"
+    echo -e "${CYAN}Password:${NC} $TROJAN_PASSWORD"
+    echo -e "${CYAN}SNI:${NC} $DOMAIN"
+    echo ""
+    echo -e "${YELLOW}Connection URI:${NC}"
+    echo "trojan://$TROJAN_PASSWORD@$DOMAIN:443#TrojanServer"
+    echo ""
+    cat "$CLIENT_DIR/trojan-qr.txt"
+    echo ""
+    print_info "Credentials saved to: $CLIENT_DIR/trojan-credentials.txt"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Trojan on Additional IP
+###############################################################################
+
+add_trojan_on_ip() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Add Trojan on Additional IP         ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Check if main Trojan is installed
+    if ! systemctl is-active --quiet trojan; then
+        print_error "Main Trojan service is not installed"
+        print_info "Please install Trojan first (option 1)"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+    
+    # Show available IPs
+    print_info "Detecting server IP addresses..."
+    echo ""
+    mapfile -t IPS < <(get_all_ips)
+    
+    if [[ ${#IPS[@]} -eq 0 ]]; then
+        print_error "No IP addresses found"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+    
+    echo -e "${CYAN}Available IP addresses:${NC}"
+    for i in "${!IPS[@]}"; do
+        echo "$((i+1)). ${IPS[$i]}"
+    done
+    echo "$((${#IPS[@]}+1)). Enter custom IP"
+    echo ""
+    
+    print_prompt "Select IP address (1-$((${#IPS[@]}+1))):"
+    read -r IP_CHOICE
+    
+    if [[ $IP_CHOICE -eq $((${#IPS[@]}+1)) ]]; then
+        print_prompt "Enter IP address:"
+        read -r ADDITIONAL_IP
+    elif [[ $IP_CHOICE -ge 1 ]] && [[ $IP_CHOICE -le ${#IPS[@]} ]]; then
+        ADDITIONAL_IP="${IPS[$((IP_CHOICE-1))]}"
+    else
+        print_error "Invalid choice"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+    
+    print_info "Using IP: $ADDITIONAL_IP"
+    
+    # Generate unique identifier for this instance
+    IP_SUFFIX=$(echo "$ADDITIONAL_IP" | tr '.' '-')
+    SERVICE_NAME="trojan-$IP_SUFFIX"
+    CONFIG_FILE="/usr/local/etc/trojan/config-$IP_SUFFIX.json"
+    
+    # Check if already exists
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_warning "Trojan is already running on $ADDITIONAL_IP"
+        read -p "Press Enter to continue..."
+        return 0
+    fi
+    
+    # Generate new password
+    NEW_PASSWORD=$(generate_random_password)
+    
+    # Copy and modify configuration
+    print_info "Creating configuration for $ADDITIONAL_IP..."
+    
+    # Check if using certificates or self-signed
+    if [[ -f "/usr/local/etc/trojan/config.json" ]]; then
+        # Copy base config and modify
+        cp /usr/local/etc/trojan/config.json "$CONFIG_FILE"
+        
+        # Update local_addr to bind to specific IP
+        jq --arg ip "$ADDITIONAL_IP" '.local_addr = $ip' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+        
+        # Update password
+        jq --arg pass "$NEW_PASSWORD" '.password = [$pass]' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+        
+        print_success "Configuration created"
+    else
+        print_error "Base configuration not found"
+        return 1
+    fi
+    
+    # Create systemd service
+    print_info "Creating systemd service..."
+    
+    cat > "/etc/systemd/system/$SERVICE_NAME.service" << EOF
+[Unit]
+Description=Trojan-GFW Server on $ADDITIONAL_IP
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/trojan -c $CONFIG_FILE
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=51200
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
+    systemctl start "$SERVICE_NAME"
+    
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_success "Trojan service started on $ADDITIONAL_IP"
+    else
+        print_error "Failed to start Trojan service"
+        journalctl -u "$SERVICE_NAME" -n 20
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+    
+    # Save credentials
+    cat > "$CLIENT_DIR/trojan-$IP_SUFFIX-credentials.txt" << EOF
+Trojan-GFW Server Information
+==============================
+Server: $ADDITIONAL_IP
+Port: 443
+Password: $NEW_PASSWORD
+SNI: $ADDITIONAL_IP
+Allow Insecure: true
+
+Connection URI:
+trojan://$NEW_PASSWORD@$ADDITIONAL_IP:443#Trojan-$IP_SUFFIX
+EOF
+    
+    # Generate QR code
+    qrencode -t ANSIUTF8 "trojan://$NEW_PASSWORD@$ADDITIONAL_IP:443#Trojan-$IP_SUFFIX" > "$CLIENT_DIR/trojan-$IP_SUFFIX-qr.txt"
+    
+    # Display information
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Trojan Added on Additional IP!      ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Server:${NC} $ADDITIONAL_IP"
+    echo -e "${CYAN}Port:${NC} 443"
+    echo -e "${CYAN}Password:${NC} $NEW_PASSWORD"
+    echo ""
+    echo -e "${YELLOW}Connection URI:${NC}"
+    echo "trojan://$NEW_PASSWORD@$ADDITIONAL_IP:443#Trojan-$IP_SUFFIX"
+    echo ""
+    cat "$CLIENT_DIR/trojan-$IP_SUFFIX-qr.txt"
+    echo ""
+    print_info "Credentials saved to: $CLIENT_DIR/trojan-$IP_SUFFIX-credentials.txt"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Xray XTLS-Reality Installation
+###############################################################################
+
+install_xray() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Xray XTLS-Reality Installation      ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Check if already installed
+    if systemctl is-active --quiet xray; then
+        print_warning "Xray is already installed and running"
+        read -p "Do you want to reinstall? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+        systemctl stop xray
+    fi
+    
+    # Install dependencies
+    print_info "Installing dependencies..."
+    apt update > /dev/null 2>&1
+    apt install -y curl unzip jq qrencode xz-utils > /dev/null 2>&1
+    print_success "Dependencies installed"
+    
+    # Install Xray
+    print_info "Installing Xray-core..."
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root > /dev/null 2>&1
+    
+    if [[ $? -eq 0 ]]; then
+        print_success "Xray-core installed"
+    else
+        print_error "Failed to install Xray-core"
+        return 1
+    fi
+    
+    # Generate parameters
+    print_info "Generating configuration parameters..."
+    
+    UUID=$(generate_uuid)
+    
+    # Wait a moment for xray to be fully installed
+    sleep 2
+    
+    # Generate X25519 keys
+    if [[ ! -f /usr/local/bin/xray ]]; then
+        print_error "Xray binary not found at /usr/local/bin/xray"
+        return 1
+    fi
+    
+    KEYS=$(/usr/local/bin/xray x25519 2>&1)
+    if [[ $? -ne 0 ]]; then
+        print_error "Failed to generate X25519 keys"
+        print_info "Key generation output: $KEYS"
+        return 1
+    fi
+    
+    PRIVATE_KEY=$(echo "$KEYS" | grep -iE "Private" | awk '{print $2}')
+    PUBLIC_KEY=$(echo "$KEYS" | grep -iE "Public|Password" | awk '{print $2}')
+    SHORT_ID=$(generate_short_id 8)
+    
+    # Validate keys were generated
+    if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
+        print_error "Failed to extract keys from xray output"
+        print_info "Keys output: $KEYS"
+        return 1
+    fi
+    
+    print_success "UUID: $UUID"
+    print_success "Public Key: $PUBLIC_KEY"
+    print_success "Short ID: $SHORT_ID"
+    
+    # Select camouflage website
+    echo ""
+    print_info "Select a camouflage website:"
+    echo "1) www.microsoft.com (Recommended)"
+    echo "2) www.apple.com"
+    echo "3) dl.google.com"
+    echo "4) www.cloudflare.com"
+    echo "5) Custom"
+    print_prompt "Enter your choice (1-5):"
+    read -r CHOICE
+    
+    case $CHOICE in
+        1) CAMOUFLAGE="www.microsoft.com" ;;
+        2) CAMOUFLAGE="www.apple.com" ;;
+        3) CAMOUFLAGE="dl.google.com" ;;
+        4) CAMOUFLAGE="www.cloudflare.com" ;;
+        5)
+            print_prompt "Enter custom camouflage website (e.g., www.example.com):"
+            read -r CAMOUFLAGE
+            ;;
+        *) CAMOUFLAGE="www.microsoft.com" ;;
+    esac
+    
+    print_info "Using camouflage: $CAMOUFLAGE"
+    
+    # Create configuration
+    print_info "Creating Xray configuration..."
+    
+    cat > /usr/local/etc/xray/config.json << EOF
+{
+    "log": {
+        "loglevel": "warning"
+    },
+    "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            {
+                "type": "field",
+                "domain": [
+                    "geosite:category-ads-all"
+                ],
+                "outboundTag": "block"
+            }
+        ]
+    },
+    "inbounds": [
+        {
+            "listen": "0.0.0.0",
+            "port": 443,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "$UUID",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": false,
+                    "dest": "$CAMOUFLAGE:443",
+                    "xver": 0,
+                    "serverNames": [
+                        "$CAMOUFLAGE"
+                    ],
+                    "privateKey": "$PRIVATE_KEY",
+                    "minClientVer": "",
+                    "maxClientVer": "",
+                    "maxTimeDiff": 0,
+                    "shortIds": [
+                        "$SHORT_ID"
+                    ]
+                }
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": [
+                    "http",
+                    "tls"
+                ]
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "tag": "direct"
+        },
+        {
+            "protocol": "blackhole",
+            "tag": "block"
+        }
+    ],
+    "policy": {
+        "levels": {
+            "0": {
+                "handshake": 3,
+                "connIdle": 180
+            }
+        }
+    }
+}
+EOF
+    
+    print_success "Xray configuration created"
+    
+    # Start service
+    systemctl restart xray
+    
+    if systemctl is-active --quiet xray; then
+        print_success "Xray service started successfully"
+    else
+        print_error "Failed to start Xray service"
+        return 1
+    fi
+    
+    # Get server IP
+    SERVER_IP=$(get_main_ip)
+    
+    # Save credentials
+    mkdir -p "$CLIENT_DIR"
+    
+    cat > "$CLIENT_DIR/xray-credentials.txt" << EOF
+Xray XTLS-Reality Server Information
+=====================================
+Server: $SERVER_IP
+Port: 443
+UUID: $UUID
+Public Key: $PUBLIC_KEY
+Short ID: $SHORT_ID
+SNI: $CAMOUFLAGE
+Flow: xtls-rprx-vision
+Security: reality
+
+Connection URI:
+vless://$UUID@$SERVER_IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#XrayReality
+EOF
+    
+    # Generate client config JSON
+    cat > "$CLIENT_DIR/xray-client-config.json" << EOF
+{
+    "outbounds": [
+        {
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "$SERVER_IP",
+                        "port": 443,
+                        "users": [
+                            {
+                                "id": "$UUID",
+                                "encryption": "none",
+                                "flow": "xtls-rprx-vision"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverName": "$CAMOUFLAGE",
+                    "fingerprint": "chrome",
+                    "show": false,
+                    "publicKey": "$PUBLIC_KEY",
+                    "shortId": "$SHORT_ID",
+                    "spiderX": ""
+                }
+            }
+        }
+    ]
+}
+EOF
+    
+    # Generate QR code
+    qrencode -t ANSIUTF8 "vless://$UUID@$SERVER_IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#XrayReality" > "$CLIENT_DIR/xray-qr.txt"
+    
+    # Display information
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Xray Installation Complete!         ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Server:${NC} $SERVER_IP"
+    echo -e "${CYAN}Port:${NC} 443"
+    echo -e "${CYAN}UUID:${NC} $UUID"
+    echo -e "${CYAN}Public Key:${NC} $PUBLIC_KEY"
+    echo -e "${CYAN}Short ID:${NC} $SHORT_ID"
+    echo -e "${CYAN}SNI:${NC} $CAMOUFLAGE"
+    echo ""
+    echo -e "${YELLOW}Connection URI:${NC}"
+    echo "vless://$UUID@$SERVER_IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#XrayReality"
+    echo ""
+    cat "$CLIENT_DIR/xray-qr.txt"
+    echo ""
+    print_info "Credentials saved to: $CLIENT_DIR/xray-credentials.txt"
+    print_info "Client config saved to: $CLIENT_DIR/xray-client-config.json"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Xray on Additional IP
+###############################################################################
+
+add_xray_on_ip() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Add Xray on Additional IP            ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Check if main Xray is installed
+    if ! systemctl is-active --quiet xray; then
+        print_error "Main Xray service is not installed"
+        print_info "Please install Xray first (option 2)"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+    
+    # Show available IPs
+    print_info "Detecting server IP addresses..."
+    echo ""
+    mapfile -t IPS < <(get_all_ips)
+    
+    if [[ ${#IPS[@]} -eq 0 ]]; then
+        print_error "No IP addresses found"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+    
+    echo -e "${CYAN}Available IP addresses:${NC}"
+    for i in "${!IPS[@]}"; do
+        echo "$((i+1)). ${IPS[$i]}"
+    done
+    echo "$((${#IPS[@]}+1)). Enter custom IP"
+    echo ""
+    
+    print_prompt "Select IP address (1-$((${#IPS[@]}+1))):"
+    read -r IP_CHOICE
+    
+    if [[ $IP_CHOICE -eq $((${#IPS[@]}+1)) ]]; then
+        print_prompt "Enter IP address:"
+        read -r ADDITIONAL_IP
+    elif [[ $IP_CHOICE -ge 1 ]] && [[ $IP_CHOICE -le ${#IPS[@]} ]]; then
+        ADDITIONAL_IP="${IPS[$((IP_CHOICE-1))]}"
+    else
+        print_error "Invalid choice"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+    
+    print_info "Using IP: $ADDITIONAL_IP"
+    
+    # Generate unique identifier for this instance
+    IP_SUFFIX=$(echo "$ADDITIONAL_IP" | tr '.' '-')
+    SERVICE_NAME="xray-$IP_SUFFIX"
+    CONFIG_FILE="/usr/local/etc/xray/config-$IP_SUFFIX.json"
+    
+    # Check if already exists
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_warning "Xray is already running on $ADDITIONAL_IP"
+        read -p "Press Enter to continue..."
+        return 0
+    fi
+    
+    # Generate new parameters
+    NEW_UUID=$(generate_uuid)
+    
+    # Generate X25519 keys
+    KEYS=$(/usr/local/bin/xray x25519 2>&1)
+    if [[ $? -ne 0 ]]; then
+        print_error "Failed to generate X25519 keys"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+    
+    PRIVATE_KEY=$(echo "$KEYS" | grep -iE "Private" | awk '{print $2}')
+    PUBLIC_KEY=$(echo "$KEYS" | grep -iE "Public|Password" | awk '{print $2}')
+    SHORT_ID=$(generate_short_id 8)
+    
+    # Validate keys
+    if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
+        print_error "Failed to extract keys"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+    
+    # Get camouflage from main config
+    CAMOUFLAGE=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json)
+    
+    print_info "Creating configuration for $ADDITIONAL_IP..."
+    
+    # Create new config
+    cat > "$CONFIG_FILE" << EOF
+{
+    "log": {
+        "loglevel": "warning"
+    },
+    "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            {
+                "type": "field",
+                "domain": [
+                    "geosite:category-ads-all"
+                ],
+                "outboundTag": "block"
+            }
+        ]
+    },
+    "inbounds": [
+        {
+            "listen": "$ADDITIONAL_IP",
+            "port": 443,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "$NEW_UUID",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": false,
+                    "dest": "$CAMOUFLAGE:443",
+                    "xver": 0,
+                    "serverNames": [
+                        "$CAMOUFLAGE"
+                    ],
+                    "privateKey": "$PRIVATE_KEY",
+                    "minClientVer": "",
+                    "maxClientVer": "",
+                    "maxTimeDiff": 0,
+                    "shortIds": [
+                        "$SHORT_ID"
+                    ]
+                }
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": [
+                    "http",
+                    "tls"
+                ]
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "tag": "direct"
+        },
+        {
+            "protocol": "blackhole",
+            "tag": "block"
+        }
+    ],
+    "policy": {
+        "levels": {
+            "0": {
+                "handshake": 3,
+                "connIdle": 180
+            }
+        }
+    }
+}
+EOF
+    
+    print_success "Configuration created"
+    
+    # Create systemd service
+    print_info "Creating systemd service..."
+    
+    cat > "/etc/systemd/system/$SERVICE_NAME.service" << EOF
+[Unit]
+Description=Xray XTLS-Reality Server on $ADDITIONAL_IP
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/xray run -c $CONFIG_FILE
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=51200
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
+    systemctl start "$SERVICE_NAME"
+    
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_success "Xray service started on $ADDITIONAL_IP"
+    else
+        print_error "Failed to start Xray service"
+        journalctl -u "$SERVICE_NAME" -n 20
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+    
+    # Save credentials
+    cat > "$CLIENT_DIR/xray-$IP_SUFFIX-credentials.txt" << EOF
+Xray XTLS-Reality Server Information
+=====================================
+Server: $ADDITIONAL_IP
+Port: 443
+UUID: $NEW_UUID
+Public Key: $PUBLIC_KEY
+Short ID: $SHORT_ID
+SNI: $CAMOUFLAGE
+Flow: xtls-rprx-vision
+Security: reality
+
+Connection URI:
+vless://$NEW_UUID@$ADDITIONAL_IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Xray-$IP_SUFFIX
+EOF
+    
+    # Generate QR code
+    qrencode -t ANSIUTF8 "vless://$NEW_UUID@$ADDITIONAL_IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Xray-$IP_SUFFIX" > "$CLIENT_DIR/xray-$IP_SUFFIX-qr.txt"
+    
+    # Display information
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Xray Added on Additional IP!        ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Server:${NC} $ADDITIONAL_IP"
+    echo -e "${CYAN}Port:${NC} 443"
+    echo -e "${CYAN}UUID:${NC} $NEW_UUID"
+    echo -e "${CYAN}Public Key:${NC} $PUBLIC_KEY"
+    echo -e "${CYAN}Short ID:${NC} $SHORT_ID"
+    echo ""
+    echo -e "${YELLOW}Connection URI:${NC}"
+    echo "vless://$NEW_UUID@$ADDITIONAL_IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Xray-$IP_SUFFIX"
+    echo ""
+    cat "$CLIENT_DIR/xray-$IP_SUFFIX-qr.txt"
+    echo ""
+    print_info "Credentials saved to: $CLIENT_DIR/xray-$IP_SUFFIX-credentials.txt"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# View Connection Info
+###############################################################################
+
+view_connection_info() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Connection Information               ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Show all Trojan instances
+    if systemctl is-active --quiet trojan; then
+        echo -e "${CYAN}=== Trojan-GFW (Main) ===${NC}"
+        if [[ -f "$CLIENT_DIR/trojan-credentials.txt" ]]; then
+            cat "$CLIENT_DIR/trojan-credentials.txt"
+            echo ""
+            if [[ -f "$CLIENT_DIR/trojan-qr.txt" ]]; then
+                cat "$CLIENT_DIR/trojan-qr.txt"
+            fi
+        fi
+        echo ""
+    fi
+    
+    # Show additional Trojan instances
+    for service in /etc/systemd/system/trojan-*.service; do
+        if [[ -f "$service" ]]; then
+            SERVICE_NAME=$(basename "$service" .service)
+            IP_SUFFIX=${SERVICE_NAME#trojan-}
+            
+            if systemctl is-active --quiet "$SERVICE_NAME"; then
+                echo -e "${CYAN}=== Trojan-GFW ($IP_SUFFIX) ===${NC}"
+                if [[ -f "$CLIENT_DIR/trojan-$IP_SUFFIX-credentials.txt" ]]; then
+                    cat "$CLIENT_DIR/trojan-$IP_SUFFIX-credentials.txt"
+                    echo ""
+                fi
+            fi
+        fi
+    done
+    
+    # Show main Xray
+    if systemctl is-active --quiet xray; then
+        echo -e "${CYAN}=== Xray XTLS-Reality (Main) ===${NC}"
+        if [[ -f "$CLIENT_DIR/xray-credentials.txt" ]]; then
+            cat "$CLIENT_DIR/xray-credentials.txt"
+            echo ""
+            if [[ -f "$CLIENT_DIR/xray-qr.txt" ]]; then
+                cat "$CLIENT_DIR/xray-qr.txt"
+            fi
+        fi
+        echo ""
+    fi
+    
+    # Show additional Xray instances
+    for service in /etc/systemd/system/xray-*.service; do
+        if [[ -f "$service" ]]; then
+            SERVICE_NAME=$(basename "$service" .service)
+            IP_SUFFIX=${SERVICE_NAME#xray-}
+            
+            if systemctl is-active --quiet "$SERVICE_NAME"; then
+                echo -e "${CYAN}=== Xray XTLS-Reality ($IP_SUFFIX) ===${NC}"
+                if [[ -f "$CLIENT_DIR/xray-$IP_SUFFIX-credentials.txt" ]]; then
+                    cat "$CLIENT_DIR/xray-$IP_SUFFIX-credentials.txt"
+                    echo ""
+                fi
+            fi
+        fi
+    done
+    
+    if ! systemctl is-active --quiet trojan && ! systemctl is-active --quiet xray && [[ ! -f /etc/systemd/system/trojan-*.service ]] && [[ ! -f /etc/systemd/system/xray-*.service ]]; then
+        print_warning "No VPN services are currently running"
+    fi
+    
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Gaming Optimization
+###############################################################################
+
+optimize_for_gaming() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Gaming Optimization Module           ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    enable_bbr
+    optimize_network
+    increase_file_limits
+    
+    echo ""
+    print_success "All gaming optimizations applied!"
+    print_info "Your server is now optimized for low-latency gaming"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Uninstall
+###############################################################################
+
+uninstall_vpn() {
+    clear
+    echo -e "${RED}╔════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║   Uninstall VPN Services               ║${NC}"
+    echo -e "${RED}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    print_warning "This will remove all VPN services and configurations"
+    read -p "Are you sure? (yes/no): " -r CONFIRM
+    
+    if [[ "$CONFIRM" != "yes" ]]; then
+        print_info "Uninstall cancelled"
+        return 0
+    fi
+    
+    # Stop and remove main Trojan
+    if systemctl is-active --quiet trojan; then
+        print_info "Removing Trojan..."
+        systemctl stop trojan
+        systemctl disable trojan > /dev/null 2>&1
+        rm -f /etc/systemd/system/trojan.service
+        rm -f /usr/local/bin/trojan
+        rm -rf /usr/local/etc/trojan
+        print_success "Trojan removed"
+    fi
+    
+    # Stop and remove additional Trojan instances
+    for service in /etc/systemd/system/trojan-*.service; do
+        if [[ -f "$service" ]]; then
+            SERVICE_NAME=$(basename "$service" .service)
+            print_info "Removing $SERVICE_NAME..."
+            systemctl stop "$SERVICE_NAME"
+            systemctl disable "$SERVICE_NAME" > /dev/null 2>&1
+            rm -f "$service"
+            print_success "$SERVICE_NAME removed"
+        fi
+    done
+    
+    # Stop and remove main Xray
+    if systemctl is-active --quiet xray; then
+        print_info "Removing Xray..."
+        systemctl stop xray
+        systemctl disable xray > /dev/null 2>&1
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove > /dev/null 2>&1
+        print_success "Xray removed"
+    fi
+    
+    # Stop and remove additional Xray instances
+    for service in /etc/systemd/system/xray-*.service; do
+        if [[ -f "$service" ]]; then
+            SERVICE_NAME=$(basename "$service" .service)
+            print_info "Removing $SERVICE_NAME..."
+            systemctl stop "$SERVICE_NAME"
+            systemctl disable "$SERVICE_NAME" > /dev/null 2>&1
+            rm -f "$service"
+            print_success "$SERVICE_NAME removed"
+        fi
+    done
+    
+    # Remove client configs
+    if [[ -d "$CLIENT_DIR" ]]; then
+        print_info "Removing client configurations..."
+        rm -rf "$CLIENT_DIR"
+        print_success "Client configurations removed"
+    fi
+    
+    systemctl daemon-reload
+    
+    echo ""
+    print_success "Uninstall complete!"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+###############################################################################
+# Protocol Switching
+###############################################################################
+
+switch_protocol() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Switch Protocol (Main IP)            ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Check current status
+    TROJAN_RUNNING=$(systemctl is-active trojan 2>/dev/null)
+    XRAY_RUNNING=$(systemctl is-active xray 2>/dev/null)
+    
+    echo -e "${CYAN}Current Status:${NC}"
+    if [[ "$TROJAN_RUNNING" == "active" ]]; then
+        echo -e "  ${GREEN}[✓]${NC} Trojan: Running"
+    else
+        echo -e "  ${RED}[✗]${NC} Trojan: Stopped"
+    fi
+    
+    if [[ "$XRAY_RUNNING" == "active" ]]; then
+        echo -e "  ${GREEN}[✓]${NC} Xray: Running"
+    else
+        echo -e "  ${RED}[✗]${NC} Xray: Stopped"
+    fi
+    echo ""
+    
+    # Check if both are installed
+    TROJAN_INSTALLED=false
+    XRAY_INSTALLED=false
+    
+    if [[ -f /usr/local/bin/trojan ]] && [[ -f /usr/local/etc/trojan/config.json ]]; then
+        TROJAN_INSTALLED=true
+    fi
+    
+    if [[ -f /usr/local/bin/xray ]] && [[ -f /usr/local/etc/xray/config.json ]]; then
+        XRAY_INSTALLED=true
+    fi
+    
+    # Provide options based on what's installed
+    if [[ "$TROJAN_INSTALLED" == false ]] && [[ "$XRAY_INSTALLED" == false ]]; then
+        print_error "No protocols are installed yet"
+        print_info "Please install Trojan (option 1) or Xray (option 2) first"
+        echo ""
+        read -p "Press Enter to continue..."
+        return 0
+    fi
+    
+    echo -e "${YELLOW}Switch Options:${NC}"
+    echo ""
+    
+    if [[ "$TROJAN_RUNNING" == "active" ]]; then
+        if [[ "$XRAY_INSTALLED" == true ]]; then
+            echo -e "${CYAN}1.${NC} Switch to Xray (stop Trojan, start Xray)"
+        else
+            echo -e "${CYAN}1.${NC} Install and switch to Xray"
+        fi
+        echo -e "${CYAN}2.${NC} Stop Trojan (no VPN running)"
+    elif [[ "$XRAY_RUNNING" == "active" ]]; then
+        if [[ "$TROJAN_INSTALLED" == true ]]; then
+            echo -e "${CYAN}1.${NC} Switch to Trojan (stop Xray, start Trojan)"
+        else
+            echo -e "${CYAN}1.${NC} Install and switch to Trojan"
+        fi
+        echo -e "${CYAN}2.${NC} Stop Xray (no VPN running)"
+    else
+        # Neither running
+        if [[ "$TROJAN_INSTALLED" == true ]]; then
+            echo -e "${CYAN}1.${NC} Start Trojan"
+        fi
+        if [[ "$XRAY_INSTALLED" == true ]]; then
+            echo -e "${CYAN}2.${NC} Start Xray"
+        fi
+    fi
+    
+    echo -e "${CYAN}0.${NC} Cancel"
+    echo ""
+    
+    print_prompt "Enter your choice:"
+    read -r SWITCH_CHOICE
+    
+    case $SWITCH_CHOICE in
+        1)
+            if [[ "$TROJAN_RUNNING" == "active" ]]; then
+                # Switch from Trojan to Xray
+                print_info "Stopping Trojan..."
+                systemctl stop trojan
+                print_success "Trojan stopped"
+                
+                if [[ "$XRAY_INSTALLED" == true ]]; then
+                    print_info "Starting Xray..."
+                    systemctl start xray
+                    sleep 2
+                    
+                    if systemctl is-active --quiet xray; then
+                        print_success "Xray started successfully"
+                        echo ""
+                        print_info "Switched to Xray!"
+                        echo ""
+                        
+                        # Show Xray connection info
+                        if [[ -f "$CLIENT_DIR/xray-credentials.txt" ]]; then
+                            echo -e "${CYAN}=== Xray Connection Info ===${NC}"
+                            cat "$CLIENT_DIR/xray-credentials.txt"
+                        fi
+                    else
+                        print_error "Failed to start Xray"
+                        print_warning "Starting Trojan back..."
+                        systemctl start trojan
+                    fi
+                else
+                    print_info "Xray is not installed. Installing now..."
+                    install_xray
+                fi
+                
+            elif [[ "$XRAY_RUNNING" == "active" ]]; then
+                # Switch from Xray to Trojan
+                print_info "Stopping Xray..."
+                systemctl stop xray
+                print_success "Xray stopped"
+                
+                if [[ "$TROJAN_INSTALLED" == true ]]; then
+                    print_info "Starting Trojan..."
+                    systemctl start trojan
+                    sleep 2
+                    
+                    if systemctl is-active --quiet trojan; then
+                        print_success "Trojan started successfully"
+                        echo ""
+                        print_info "Switched to Trojan!"
+                        echo ""
+                        
+                        # Show Trojan connection info
+                        if [[ -f "$CLIENT_DIR/trojan-credentials.txt" ]]; then
+                            echo -e "${CYAN}=== Trojan Connection Info ===${NC}"
+                            cat "$CLIENT_DIR/trojan-credentials.txt"
+                        fi
+                    else
+                        print_error "Failed to start Trojan"
+                        print_warning "Starting Xray back..."
+                        systemctl start xray
+                    fi
+                else
+                    print_info "Trojan is not installed. Installing now..."
+                    install_trojan
+                fi
+                
+            else
+                # Neither running, start Trojan
+                if [[ "$TROJAN_INSTALLED" == true ]]; then
+                    print_info "Starting Trojan..."
+                    systemctl start trojan
+                    sleep 2
+                    
+                    if systemctl is-active --quiet trojan; then
+                        print_success "Trojan started"
+                        if [[ -f "$CLIENT_DIR/trojan-credentials.txt" ]]; then
+                            cat "$CLIENT_DIR/trojan-credentials.txt"
+                        fi
+                    else
+                        print_error "Failed to start Trojan"
+                    fi
+                fi
+            fi
+            ;;
+            
+        2)
+            if [[ "$TROJAN_RUNNING" == "active" ]]; then
+                # Stop Trojan
+                print_info "Stopping Trojan..."
+                systemctl stop trojan
+                print_success "Trojan stopped"
+                print_warning "No VPN is running now"
+                
+            elif [[ "$XRAY_RUNNING" == "active" ]]; then
+                # Stop Xray
+                print_info "Stopping Xray..."
+                systemctl stop xray
+                print_success "Xray stopped"
+                print_warning "No VPN is running now"
+                
+            else
+                # Start Xray
+                if [[ "$XRAY_INSTALLED" == true ]]; then
+                    print_info "Starting Xray..."
+                    systemctl start xray
+                    sleep 2
+                    
+                    if systemctl is-active --quiet xray; then
+                        print_success "Xray started"
+                        if [[ -f "$CLIENT_DIR/xray-credentials.txt" ]]; then
+                            cat "$CLIENT_DIR/xray-credentials.txt"
+                        fi
+                    else
+                        print_error "Failed to start Xray"
+                    fi
+                fi
+            fi
+            ;;
+            
+        0)
+            print_info "Cancelled"
+            ;;
+            
+        *)
+            print_error "Invalid choice"
+            ;;
+    esac
+    
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Main Menu
+###############################################################################
+
+show_menu() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   VPN Gaming Autoscript v$SCRIPT_VERSION        ║${NC}"
+    echo -e "${GREEN}║   Optimized for Low-Ping Gaming        ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}1.${NC} Install Trojan-GFW"
+    echo -e "${CYAN}2.${NC} Install Xray (VLESS + XTLS-Reality)"
+    echo -e "${CYAN}3.${NC} Add Trojan on Additional IP"
+    echo -e "${CYAN}4.${NC} Add Xray on Additional IP"
+    echo -e "${CYAN}5.${NC} Switch Protocol (Trojan ↔ Xray)"
+    echo -e "${CYAN}6.${NC} View Connection Info"
+    echo -e "${CYAN}7.${NC} Optimize for Gaming (BBR + Tweaks)"
+    echo -e "${CYAN}8.${NC} Uninstall"
+    echo -e "${CYAN}9.${NC} Exit"
+    echo ""
+    
+    # Show service status
+    if systemctl is-active --quiet trojan; then
+        echo -e "${GREEN}[✓]${NC} Trojan: Running"
+    fi
+    if systemctl is-active --quiet xray; then
+        echo -e "${GREEN}[✓]${NC} Xray: Running"
+    fi
+    
+    # Count additional instances
+    TROJAN_COUNT=0
+    for service in /etc/systemd/system/trojan-*.service; do
+        if [[ -f "$service" ]] && systemctl is-active --quiet "$(basename "$service" .service)"; then
+            ((TROJAN_COUNT++))
+        fi
+    done
+    if [[ $TROJAN_COUNT -gt 0 ]]; then
+        echo -e "${GREEN}[✓]${NC} Trojan Additional IPs: $TROJAN_COUNT"
+    fi
+    
+    XRAY_COUNT=0
+    for service in /etc/systemd/system/xray-*.service; do
+        if [[ -f "$service" ]] && systemctl is-active --quiet "$(basename "$service" .service)"; then
+            ((XRAY_COUNT++))
+        fi
+    done
+    if [[ $XRAY_COUNT -gt 0 ]]; then
+        echo -e "${GREEN}[✓]${NC} Xray Additional IPs: $XRAY_COUNT"
+    fi
+    
+    echo ""
+}
+
+main() {
+    # Initial setup
+    mkdir -p "$INSTALL_DIR"
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$CLIENT_DIR"
+    touch "$LOG_FILE"
+    
+    # Check requirements
+    check_root
+    check_os
+    check_internet
+    
+    # Main loop
+    while true; do
+        show_menu
+        print_prompt "Enter your choice (1-9):"
+        read -r CHOICE
+        
+        case $CHOICE in
+            1) install_trojan ;;
+            2) install_xray ;;
+            3) add_trojan_on_ip ;;
+            4) add_xray_on_ip ;;
+            5) switch_protocol ;;
+            6) view_connection_info ;;
+            7) optimize_for_gaming ;;
+            8) uninstall_vpn ;;
+            9)
+                clear
+                print_success "Thank you for using VPN Gaming Autoscript!"
+                exit 0
+                ;;
+            *)
+                print_error "Invalid choice. Please try again."
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# Run main function
+main

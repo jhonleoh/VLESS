@@ -1,0 +1,60 @@
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║   VPN Gaming Autoscript v2.0 - Quick Start               ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+
+📥 DOWNLOAD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+wget https://your-server/menu
+chmod +x menu
+
+
+🚀 RUN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+./menu
+
+
+📋 MENU OPTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Install Trojan-GFW
+2. Install Xray (VLESS + XTLS-Reality)
+3. Add Trojan on Additional IP
+4. Add Xray on Additional IP
+5. Switch Protocol (Trojan ↔ Xray)      ← NEW!
+6. View Connection Info
+7. Optimize for Gaming (BBR + Tweaks)
+8. Uninstall
+9. Exit
+
+
+🎯 FIRST TIME SETUP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+./menu → Option 1 or 2    (Install protocol)
+./menu → Option 7         (Optimize for gaming)
+./menu → Option 6         (Get connection info)
+
+
+🔄 SWITCH PROTOCOLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+./menu → Option 2         (Install Xray if not installed)
+./menu → Option 5         (Switch Protocol)
+./menu → Option 1         (Switch to Xray)
+
+
+🌐 MULTI-IP SETUP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Main IP:      ./menu → 1 or 2
+Floating IP:  ./menu → 3 or 4 → Select IP
+
+
+💡 PRO TIP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Move to PATH for easier access:
+sudo mv menu /usr/local/bin/
+
+Then just type: menu
+
+
+🎮 ENJOY LOW-PING GAMING!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
