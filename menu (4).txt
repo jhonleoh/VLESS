@@ -1,0 +1,3401 @@
+#!/bin/bash
+
+###############################################################################
+# Auto-Install to PATH
+###############################################################################
+
+# Check if script is in PATH
+SCRIPT_NAME="menu"
+SCRIPT_PATH="$(readlink -f "$0")"
+INSTALL_PATH="/usr/local/bin/$SCRIPT_NAME"
+
+# If not running from /usr/local/bin, offer to install
+if [[ "$SCRIPT_PATH" != "$INSTALL_PATH" ]] && [[ ! -L "$INSTALL_PATH" ]]; then
+    # Check if running as root
+    if [[ $EUID -eq 0 ]]; then
+        echo "[i] Installing 'menu' command to system PATH..."
+        cp "$SCRIPT_PATH" "$INSTALL_PATH"
+        chmod +x "$INSTALL_PATH"
+        echo "[✓] Installation complete!"
+        echo "[i] You can now type 'menu' from anywhere!"
+        echo ""
+        sleep 2
+        # Re-execute from installed location
+        exec "$INSTALL_PATH" "$@"
+    else
+        echo "[!] First-time setup: Installing 'menu' command..."
+        echo "[i] This requires root privileges"
+        echo ""
+        if command -v sudo &> /dev/null; then
+            sudo cp "$SCRIPT_PATH" "$INSTALL_PATH"
+            sudo chmod +x "$INSTALL_PATH"
+            echo "[✓] Installation complete!"
+            echo "[i] You can now type 'menu' from anywhere!"
+            echo ""
+            sleep 2
+            # Re-execute from installed location with sudo
+            exec sudo "$INSTALL_PATH" "$@"
+        else
+            echo "[!] sudo not available. Please run as root:"
+            echo "    su -"
+            echo "    bash $SCRIPT_PATH"
+            exit 1
+        fi
+    fi
+fi
+
+# If not root, re-execute with sudo
+if [[ $EUID -ne 0 ]]; then
+    if command -v sudo &> /dev/null; then
+        exec sudo "$0" "$@"
+    else
+        echo "[!] This script requires root privileges"
+        echo "[!] Please run: su - or install sudo"
+        exit 1
+    fi
+fi
+
+###############################################################################
+# VPN Gaming Autoscript v4.0 - All-in-One Edition (IPv4/IPv6 Universal)
+# Optimized TLS-based VPN installation for low-ping gaming
+# Supports: Trojan-GFW, Xray XTLS-Reality, VLESS-WS+TLS (CDN Fronting)
+# OS: Debian 10/11/12/13+, Ubuntu 20.04/22.04/24.04+, any systemd distro
+# Features: Web UI Dashboard, Speed Optimizations, Universal Dependency Fix
+###############################################################################
+
+# Color definitions
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+WHITE='\033[1;37m'
+NC='\033[0m' # No Color
+
+# Global variables
+SCRIPT_VERSION="4.0"
+INSTALL_DIR="/opt/vpn-gaming"
+CONFIG_DIR="/etc/vpn-gaming"
+LOG_FILE="/var/log/vpn-gaming-install.log"
+CLIENT_DIR="$HOME/vpn-clients"
+WEBUI_DIR="/opt/vpn-gaming/webui"
+WEBUI_PORT_FILE="/opt/vpn-gaming/webui_port"
+
+###############################################################################
+# Utility Functions
+###############################################################################
+
+print_success() {
+    echo -e "${GREEN}[✓]${NC} $1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: $1" >> "$LOG_FILE"
+}
+
+print_error() {
+    echo -e "${RED}[✗]${NC} $1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $1" >> "$LOG_FILE"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: $1" >> "$LOG_FILE"
+}
+
+print_info() {
+    echo -e "${BLUE}[i]${NC} $1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: $1" >> "$LOG_FILE"
+}
+
+print_prompt() {
+    echo -e "${CYAN}[?]${NC} $1"
+}
+
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        print_error "This script must be run as root"
+        exit 1
+    fi
+}
+
+check_os() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS=$ID
+        VER=$VERSION_ID
+
+        case "$OS" in
+            debian|ubuntu|linuxmint|pop|elementary|zorin|kali|parrot|raspbian)
+                print_success "Detected $PRETTY_NAME (Debian-family)"
+                PKG_MANAGER="apt"
+                ;;
+            centos|rhel|rocky|alma|fedora|oracle)
+                print_success "Detected $PRETTY_NAME (RHEL-family)"
+                PKG_MANAGER="yum"
+                if command -v dnf &> /dev/null; then
+                    PKG_MANAGER="dnf"
+                fi
+                ;;
+            arch|manjaro|endeavouros)
+                print_success "Detected $PRETTY_NAME (Arch-family)"
+                PKG_MANAGER="pacman"
+                ;;
+            opensuse*|sles)
+                print_success "Detected $PRETTY_NAME (SUSE-family)"
+                PKG_MANAGER="zypper"
+                ;;
+            alpine)
+                print_success "Detected $PRETTY_NAME (Alpine)"
+                PKG_MANAGER="apk"
+                ;;
+            *)
+                print_warning "Detected $PRETTY_NAME - not officially tested"
+                print_info "Attempting Debian-compatible installation..."
+                PKG_MANAGER="apt"
+                ;;
+        esac
+        return 0
+    else
+        print_error "Cannot detect OS"
+        exit 1
+    fi
+}
+
+check_internet() {
+    print_info "Checking internet connectivity (IPv4 + IPv6)..."
+    local ipv4_ok=false
+    local ipv6_ok=false
+
+    # Check IPv4 connectivity
+    if ping -4 -c 1 -W 5 8.8.8.8 &> /dev/null; then
+        ipv4_ok=true
+        print_success "IPv4 connectivity: OK"
+    else
+        print_warning "IPv4 connectivity: FAILED"
+    fi
+
+    # Check IPv6 connectivity
+    if ping -6 -c 1 -W 5 2001:4860:4860::8888 &> /dev/null; then
+        ipv6_ok=true
+        print_success "IPv6 connectivity: OK"
+    else
+        print_warning "IPv6 connectivity: Not available (IPv4-only mode)"
+    fi
+
+    if [[ "$ipv4_ok" == false ]] && [[ "$ipv6_ok" == false ]]; then
+        print_error "No internet connection (neither IPv4 nor IPv6)"
+        exit 1
+    fi
+
+    # Store global connectivity flags
+    HAS_IPV4=$ipv4_ok
+    HAS_IPV6=$ipv6_ok
+    return 0
+}
+
+generate_random_password() {
+    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32
+}
+
+generate_uuid() {
+    cat /proc/sys/kernel/random/uuid
+}
+
+generate_short_id() {
+    tr -dc 'a-f0-9' < /dev/urandom | head -c ${1:-8}
+}
+
+###############################################################################
+# UNIVERSAL DEPENDENCY INSTALLER (Fixes Debian 13 / any OS stuck issues)
+# - Uses timeout to prevent hangs
+# - Kills stale dpkg/apt locks
+# - Handles all package managers
+# - Non-interactive forced mode
+###############################################################################
+
+fix_dpkg_locks() {
+    # Kill any stuck apt/dpkg processes
+    pkill -9 -f "apt" 2>/dev/null
+    pkill -9 -f "dpkg" 2>/dev/null
+    sleep 1
+
+    # Remove stale lock files
+    rm -f /var/lib/dpkg/lock-frontend 2>/dev/null
+    rm -f /var/lib/dpkg/lock 2>/dev/null
+    rm -f /var/cache/apt/archives/lock 2>/dev/null
+    rm -f /var/lib/apt/lists/lock 2>/dev/null
+
+    # Reconfigure dpkg if interrupted
+    dpkg --configure -a --force-confdef --force-confold 2>/dev/null
+}
+
+install_packages() {
+    local packages=("$@")
+    local max_retries=3
+    local retry=0
+
+    # Set fully non-interactive environment
+    export DEBIAN_FRONTEND=noninteractive
+    export NEEDRESTART_MODE=a
+    export NEEDRESTART_SUSPEND=1
+    export UCF_FORCE_CONFFOLD=1
+
+    while [[ $retry -lt $max_retries ]]; do
+        case "$PKG_MANAGER" in
+            apt)
+                # Fix any stuck locks first
+                fix_dpkg_locks
+
+                # Configure apt for non-interactive, no prompts
+                local APT_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Allow-Unauthenticated=true"
+
+                # Update with timeout (Debian 13 can hang here)
+                timeout 120 apt-get update $APT_OPTS -qq 2>/dev/null
+
+                # Install with timeout and force-yes
+                if timeout 300 apt-get install -y -qq $APT_OPTS --no-install-recommends "${packages[@]}" 2>/dev/null; then
+                    return 0
+                fi
+
+                # If failed, try fixing and retrying
+                fix_dpkg_locks
+                apt-get -f install -y -qq $APT_OPTS 2>/dev/null
+                ;;
+            dnf)
+                if timeout 300 dnf install -y -q "${packages[@]}" 2>/dev/null; then
+                    return 0
+                fi
+                ;;
+            yum)
+                if timeout 300 yum install -y -q "${packages[@]}" 2>/dev/null; then
+                    return 0
+                fi
+                ;;
+            pacman)
+                if timeout 300 pacman -S --noconfirm --needed "${packages[@]}" 2>/dev/null; then
+                    return 0
+                fi
+                ;;
+            zypper)
+                if timeout 300 zypper install -y -n "${packages[@]}" 2>/dev/null; then
+                    return 0
+                fi
+                ;;
+            apk)
+                if timeout 300 apk add --no-cache "${packages[@]}" 2>/dev/null; then
+                    return 0
+                fi
+                ;;
+        esac
+
+        ((retry++))
+        print_warning "Package install attempt $retry/$max_retries failed, retrying..."
+        sleep 3
+    done
+
+    print_error "Failed to install packages after $max_retries attempts: ${packages[*]}"
+    return 1
+}
+
+update_package_cache() {
+    export DEBIAN_FRONTEND=noninteractive
+    export NEEDRESTART_MODE=a
+    export NEEDRESTART_SUSPEND=1
+
+    case "$PKG_MANAGER" in
+        apt)
+            fix_dpkg_locks
+            timeout 120 apt-get update -qq \
+                -o Dpkg::Options::=--force-confdef \
+                -o Dpkg::Options::=--force-confold 2>/dev/null
+            ;;
+        dnf) timeout 60 dnf makecache -q 2>/dev/null ;;
+        yum) timeout 60 yum makecache -q 2>/dev/null ;;
+        pacman) timeout 60 pacman -Sy --noconfirm 2>/dev/null ;;
+        zypper) timeout 60 zypper refresh -q 2>/dev/null ;;
+        apk) timeout 60 apk update -q 2>/dev/null ;;
+    esac
+}
+
+install_base_dependencies() {
+    print_info "Installing base dependencies (universal installer)..."
+
+    update_package_cache
+
+    # Core packages needed by all protocols
+    local core_pkgs=(curl wget jq openssl ca-certificates)
+
+    # Additional packages
+    local extra_pkgs=()
+    case "$PKG_MANAGER" in
+        apt)
+            extra_pkgs=(unzip xz-utils qrencode ethtool net-tools procps bc socat cron)
+            # iptables-persistent needs special handling on Debian 13+
+            echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections 2>/dev/null
+            echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null
+            extra_pkgs+=(iptables iptables-persistent)
+            ;;
+        dnf|yum)
+            extra_pkgs=(unzip xz qrencode ethtool net-tools procps-ng bc socat cronie iptables iptables-services)
+            ;;
+        pacman)
+            extra_pkgs=(unzip xz qrencode ethtool net-tools procps-ng bc socat cronie iptables)
+            ;;
+        zypper)
+            extra_pkgs=(unzip xz qrencode ethtool net-tools procps bc socat cron iptables)
+            ;;
+        apk)
+            extra_pkgs=(unzip xz qrencode ethtool net-tools procps bc socat iptables)
+            ;;
+    esac
+
+    install_packages "${core_pkgs[@]}" "${extra_pkgs[@]}"
+
+    # Ensure cron is running
+    if command -v systemctl &> /dev/null; then
+        systemctl enable cron 2>/dev/null || systemctl enable crond 2>/dev/null || true
+        systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null || true
+    fi
+
+    print_success "Base dependencies installed"
+}
+
+###############################################################################
+# IPv4/IPv6 Dual-Stack IP Detection Functions
+###############################################################################
+
+get_all_ips() {
+    ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1'
+}
+
+get_all_ipv6() {
+    ip -6 addr show scope global | grep -oP '(?<=inet6\s)[0-9a-f:]+' | grep -v '^::1$'
+}
+
+get_main_ip() {
+    local ip
+    for svc in ifconfig.me icanhazip.com ipinfo.io/ip api.ipify.org; do
+        ip=$(curl -4 -s --connect-timeout 5 --max-time 10 "$svc" 2>/dev/null)
+        if [[ -n "$ip" ]] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    ip=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
+    if [[ -n "$ip" ]]; then
+        echo "$ip"
+        return 0
+    fi
+    echo "127.0.0.1"
+}
+
+get_main_ipv6() {
+    local ip6
+    for svc in ifconfig.me icanhazip.com api64.ipify.org; do
+        ip6=$(curl -6 -s --connect-timeout 5 --max-time 10 "$svc" 2>/dev/null)
+        if [[ -n "$ip6" ]] && [[ "$ip6" =~ : ]]; then
+            echo "$ip6"
+            return 0
+        fi
+    done
+    ip6=$(ip -6 addr show scope global | grep -oP '(?<=inet6\s)[0-9a-f:]+' | head -n 1)
+    if [[ -n "$ip6" ]]; then
+        echo "$ip6"
+        return 0
+    fi
+    echo ""
+}
+
+is_ipv6() {
+    [[ "$1" =~ : ]]
+}
+
+format_ip_for_url() {
+    if is_ipv6 "$1"; then
+        echo "[$1]"
+    else
+        echo "$1"
+    fi
+}
+
+format_ip_suffix() {
+    echo "$1" | tr '.:' '--'
+}
+
+detect_ip_stack() {
+    local ipv4=$(get_main_ip)
+    local ipv6=$(get_main_ipv6)
+
+    echo ""
+    echo -e "${CYAN}=== Server IP Stack Detection ===${NC}"
+    if [[ -n "$ipv4" ]] && [[ "$ipv4" != "127.0.0.1" ]]; then
+        echo -e "  ${GREEN}[✓]${NC} IPv4: $ipv4"
+    else
+        echo -e "  ${RED}[✗]${NC} IPv4: Not detected"
+    fi
+
+    if [[ -n "$ipv6" ]]; then
+        echo -e "  ${GREEN}[✓]${NC} IPv6: $ipv6"
+    else
+        echo -e "  ${YELLOW}[!]${NC} IPv6: Not detected (IPv4-only server)"
+    fi
+    echo ""
+}
+
+###############################################################################
+# CRITICAL FIX: IPv6 Firewall & Kernel Dual-Stack Setup
+###############################################################################
+
+setup_ipv6_firewall() {
+    print_info "Configuring IPv6 firewall rules for VPN services..."
+
+    if ! command -v ip6tables &> /dev/null; then
+        install_packages iptables
+    fi
+
+    ip6tables -C INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || \
+        ip6tables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    ip6tables -C INPUT -p ipv6-icmp -j ACCEPT 2>/dev/null || \
+        ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
+    ip6tables -C INPUT -i lo -j ACCEPT 2>/dev/null || \
+        ip6tables -A INPUT -i lo -j ACCEPT
+    ip6tables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || \
+        ip6tables -A INPUT -p tcp --dport 443 -j ACCEPT
+    ip6tables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || \
+        ip6tables -A INPUT -p tcp --dport 80 -j ACCEPT
+
+    # Also allow WebUI port if configured
+    if [[ -f "$WEBUI_PORT_FILE" ]]; then
+        local wport=$(cat "$WEBUI_PORT_FILE" 2>/dev/null)
+        if [[ -n "$wport" ]]; then
+            ip6tables -C INPUT -p tcp --dport "$wport" -j ACCEPT 2>/dev/null || \
+                ip6tables -A INPUT -p tcp --dport "$wport" -j ACCEPT
+        fi
+    fi
+
+    # Save rules
+    if command -v netfilter-persistent &> /dev/null; then
+        netfilter-persistent save 2>/dev/null
+    elif command -v iptables-save &> /dev/null; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null
+        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+    fi
+
+    print_success "IPv6 firewall configured"
+}
+
+setup_dual_stack_kernel() {
+    print_info "Configuring kernel for dual-stack IPv4/IPv6..."
+
+    sysctl -w net.ipv6.conf.all.disable_ipv6=0 > /dev/null 2>&1
+    sysctl -w net.ipv6.conf.default.disable_ipv6=0 > /dev/null 2>&1
+    sysctl -w net.ipv6.conf.lo.disable_ipv6=0 > /dev/null 2>&1
+    sysctl -w net.ipv6.conf.all.forwarding=1 > /dev/null 2>&1
+    sysctl -w net.ipv6.conf.default.forwarding=1 > /dev/null 2>&1
+    sysctl -w net.ipv6.conf.all.accept_ra=2 > /dev/null 2>&1
+    sysctl -w net.ipv6.conf.default.accept_ra=2 > /dev/null 2>&1
+    sysctl -w net.ipv6.bindv6only=0 > /dev/null 2>&1
+
+    # Persist
+    for param in \
+        "net.ipv6.conf.all.disable_ipv6=0" \
+        "net.ipv6.conf.default.disable_ipv6=0" \
+        "net.ipv6.conf.lo.disable_ipv6=0" \
+        "net.ipv6.conf.all.forwarding=1" \
+        "net.ipv6.conf.default.forwarding=1" \
+        "net.ipv6.conf.all.accept_ra=2" \
+        "net.ipv6.conf.default.accept_ra=2" \
+        "net.ipv6.bindv6only=0"; do
+        local key="${param%%=*}"
+        sed -i "/^${key//./\\.}/d" /etc/sysctl.conf 2>/dev/null
+        echo "$param" >> /etc/sysctl.conf
+    done
+
+    sysctl -p > /dev/null 2>&1
+    print_success "Dual-stack kernel configured"
+}
+
+###############################################################################
+# Speed & Network Optimizations (Enhanced v4.0)
+###############################################################################
+
+enable_bbr() {
+    print_info "Enabling BBR congestion control..."
+
+    if ! lsmod | grep -q tcp_bbr; then
+        modprobe tcp_bbr 2>/dev/null
+        if ! grep -q "tcp_bbr" /etc/modules-load.d/bbr.conf 2>/dev/null; then
+            echo "tcp_bbr" > /etc/modules-load.d/bbr.conf
+        fi
+    fi
+
+    sysctl -w net.core.default_qdisc=fq > /dev/null 2>&1
+    sysctl -w net.ipv4.tcp_congestion_control=bbr > /dev/null 2>&1
+
+    if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
+        print_success "BBR congestion control enabled"
+    else
+        print_warning "BBR not available, using default congestion control"
+    fi
+}
+
+optimize_network() {
+    print_info "Applying advanced network optimizations for speed..."
+
+    # Remove old entries to avoid duplicates
+    local params=(
+        net.core.default_qdisc net.ipv4.tcp_congestion_control
+        net.ipv4.tcp_fastopen net.ipv4.tcp_slow_start_after_idle
+        net.ipv4.tcp_no_metrics_save net.core.rmem_max net.core.wmem_max
+        net.ipv4.tcp_rmem net.ipv4.tcp_wmem net.ipv4.udp_rmem_min
+        net.ipv4.udp_wmem_min net.core.optmem_max net.core.netdev_max_backlog
+        net.core.somaxconn net.ipv4.tcp_max_syn_backlog net.ipv4.tcp_tw_reuse
+        net.ipv4.tcp_fin_timeout net.ipv4.tcp_keepalive_time
+        net.ipv4.tcp_keepalive_intvl net.ipv4.tcp_keepalive_probes
+        net.ipv4.tcp_max_tw_buckets net.ipv4.tcp_mtu_probing
+        net.ipv4.tcp_timestamps net.ipv4.tcp_sack net.ipv4.tcp_window_scaling
+        net.ipv4.ip_local_port_range net.ipv4.tcp_ecn net.ipv4.tcp_rfc1337
+        net.ipv4.tcp_synack_retries net.ipv4.tcp_syn_retries
+        net.ipv4.tcp_max_orphans net.ipv4.tcp_abort_on_overflow
+        net.ipv4.tcp_notsent_lowat
+    )
+
+    for p in "${params[@]}"; do
+        sed -i "/^${p//./\\.}/d" /etc/sysctl.conf 2>/dev/null
+    done
+
+    cat >> /etc/sysctl.conf << 'EOF'
+
+# === VPN Gaming Speed Optimizations v4.0 ===
+# BBR Congestion Control (best for throughput + low latency)
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+
+# TCP Fast Open (client+server, reduces handshake latency)
+net.ipv4.tcp_fastopen=3
+
+# Disable slow start after idle (eliminates latency spikes)
+net.ipv4.tcp_slow_start_after_idle=0
+
+# Don't cache TCP metrics (fresh connections every time)
+net.ipv4.tcp_no_metrics_save=1
+
+# Enlarged socket buffers (128MB max for high throughput)
+net.core.rmem_max=134217728
+net.core.wmem_max=134217728
+net.ipv4.tcp_rmem=4096 87380 134217728
+net.ipv4.tcp_wmem=4096 65536 134217728
+net.ipv4.udp_rmem_min=8192
+net.ipv4.udp_wmem_min=8192
+net.core.optmem_max=65536
+
+# Connection backlog (handle burst connections)
+net.core.netdev_max_backlog=250000
+net.core.somaxconn=65535
+net.ipv4.tcp_max_syn_backlog=65536
+
+# Connection reuse and recycling
+net.ipv4.tcp_tw_reuse=1
+net.ipv4.tcp_fin_timeout=10
+net.ipv4.tcp_max_tw_buckets=2000000
+
+# Aggressive keepalive (faster dead connection detection)
+net.ipv4.tcp_keepalive_time=60
+net.ipv4.tcp_keepalive_intvl=10
+net.ipv4.tcp_keepalive_probes=6
+
+# MTU probing (auto-discover optimal MTU, critical for IPv6)
+net.ipv4.tcp_mtu_probing=1
+
+# TCP timestamps, SACK, window scaling
+net.ipv4.tcp_timestamps=1
+net.ipv4.tcp_sack=1
+net.ipv4.tcp_window_scaling=1
+
+# Widen ephemeral port range
+net.ipv4.ip_local_port_range=1024 65535
+
+# ECN off (some middleboxes drop ECN), RFC1337 on
+net.ipv4.tcp_ecn=0
+net.ipv4.tcp_rfc1337=1
+
+# Faster connection setup
+net.ipv4.tcp_synack_retries=2
+net.ipv4.tcp_syn_retries=2
+
+# Handle orphaned connections aggressively
+net.ipv4.tcp_max_orphans=262144
+net.ipv4.tcp_abort_on_overflow=0
+
+# Low-latency send notification threshold
+net.ipv4.tcp_notsent_lowat=16384
+EOF
+
+    sysctl -p > /dev/null 2>&1
+    print_success "Advanced network optimizations applied"
+}
+
+increase_file_limits() {
+    print_info "Increasing file descriptor limits..."
+
+    sed -i '/soft nofile/d' /etc/security/limits.conf
+    sed -i '/hard nofile/d' /etc/security/limits.conf
+    sed -i '/soft nproc/d' /etc/security/limits.conf
+    sed -i '/hard nproc/d' /etc/security/limits.conf
+
+    cat >> /etc/security/limits.conf << 'EOF'
+* soft nofile 1048576
+* hard nofile 1048576
+* soft nproc 1048576
+* hard nproc 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+EOF
+
+    # Also set systemd defaults
+    mkdir -p /etc/systemd/system.conf.d
+    cat > /etc/systemd/system.conf.d/limits.conf << 'EOF'
+[Manager]
+DefaultLimitNOFILE=1048576
+DefaultLimitNPROC=1048576
+EOF
+
+    ulimit -n 1048576 2>/dev/null
+    systemctl daemon-reexec 2>/dev/null
+    print_success "File descriptor limits increased to 1048576"
+}
+
+optimize_irq_affinity() {
+    print_info "Optimizing IRQ affinity for network interfaces..."
+
+    if ! command -v irqbalance &> /dev/null; then
+        install_packages irqbalance
+    fi
+
+    systemctl enable irqbalance > /dev/null 2>&1
+    systemctl start irqbalance > /dev/null 2>&1
+    print_success "IRQ balancing enabled"
+}
+
+optimize_mtu() {
+    print_info "Detecting and optimizing MTU for all interfaces..."
+
+    local iface=$(ip route show default | awk '/default/ {print $5}' | head -n 1)
+    if [[ -z "$iface" ]]; then
+        iface=$(ip -6 route show default | awk '/default/ {print $5}' | head -n 1)
+    fi
+
+    if [[ -n "$iface" ]]; then
+        local current_mtu=$(ip link show "$iface" | awk '/mtu/ {print $5}')
+        print_info "Interface: $iface, Current MTU: $current_mtu"
+
+        if [[ "$current_mtu" -lt 1280 ]]; then
+            ip link set "$iface" mtu 1280
+            print_warning "MTU was below IPv6 minimum (1280), adjusted"
+        fi
+
+        # MSS clamping for better compatibility
+        if command -v iptables &> /dev/null; then
+            iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+                iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
+        fi
+        if command -v ip6tables &> /dev/null; then
+            ip6tables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+                ip6tables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
+        fi
+
+        print_success "MTU optimization applied (MSS clamping enabled)"
+    else
+        print_warning "Could not detect default network interface"
+    fi
+}
+
+setup_tcp_tuned_profile() {
+    print_info "Setting up optimized TCP profile..."
+
+    local iface=$(ip route show default | awk '/default/ {print $5}' | head -n 1)
+    if [[ -n "$iface" ]]; then
+        ethtool -K "$iface" gro on 2>/dev/null
+        ethtool -K "$iface" gso on 2>/dev/null
+        ethtool -K "$iface" tso on 2>/dev/null
+        ethtool -K "$iface" tx-checksum-ip-generic on 2>/dev/null
+        ethtool -K "$iface" rx-checksum on 2>/dev/null
+
+        # Increase ring buffer if possible
+        ethtool -G "$iface" rx 4096 tx 4096 2>/dev/null
+
+        print_success "NIC offloading optimized on $iface"
+    fi
+}
+
+
+###############################################################################
+# Trojan-GFW Installation (Universal Dual-Stack IPv4/IPv6 - v4.0)
+###############################################################################
+
+install_trojan() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Trojan-GFW Installation (Universal v4.0)    ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    detect_ip_stack
+
+    if systemctl is-active --quiet trojan; then
+        print_warning "Trojan is already installed and running"
+        read -p "Do you want to reinstall? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+        systemctl stop trojan
+    fi
+
+    setup_dual_stack_kernel
+    setup_ipv6_firewall
+
+    print_prompt "Enter your domain name (or press Enter to use server IP):"
+    read -r DOMAIN
+
+    if [[ -z "$DOMAIN" ]]; then
+        DOMAIN=$(get_main_ip)
+        print_info "Using server IP: $DOMAIN"
+        USE_CERT=false
+    else
+        print_info "Using domain: $DOMAIN"
+        USE_CERT=true
+    fi
+
+    # Install dependencies using universal installer
+    print_info "Installing dependencies..."
+    install_packages nginx certbot python3-certbot-nginx curl jq qrencode xz-utils ethtool
+    print_success "Dependencies installed"
+
+    # Configure Nginx (dual-stack)
+    if [[ "$USE_CERT" == true ]]; then
+        print_info "Configuring Nginx (dual-stack)..."
+
+        cat > /etc/nginx/sites-available/default << EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN;
+    root /var/www/html;
+    index index.html;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOF
+
+        cat > /var/www/html/index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head><title>Welcome</title>
+<style>body{font-family:Arial,sans-serif;text-align:center;padding:50px;}h1{color:#333;}</style>
+</head>
+<body><h1>Welcome to My Server</h1><p>This is a simple web server.</p></body>
+</html>
+EOF
+
+        systemctl restart nginx
+        print_success "Nginx configured (IPv4+IPv6)"
+
+        print_info "Obtaining SSL certificate from Let's Encrypt..."
+        print_warning "Make sure your domain points to this server IP: $(get_main_ip)"
+        local ipv6_addr=$(get_main_ipv6)
+        if [[ -n "$ipv6_addr" ]]; then
+            print_warning "Also add AAAA record pointing to: $ipv6_addr"
+        fi
+        read -p "Press Enter to continue..."
+
+        certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
+
+        if [[ $? -eq 0 ]]; then
+            print_success "SSL certificate obtained"
+            chmod +rx /etc/letsencrypt/live
+            chmod +rx /etc/letsencrypt/archive
+            chmod -R +r /etc/letsencrypt/archive/"$DOMAIN"
+        else
+            print_error "Failed to obtain SSL certificate"
+            print_info "Falling back to IP-based installation"
+            USE_CERT=false
+            DOMAIN=$(get_main_ip)
+        fi
+    fi
+
+    # Download and install Trojan
+    print_info "Downloading Trojan..."
+
+    # Detect architecture
+    local ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64|amd64) TROJAN_ARCH="linux-amd64" ;;
+        aarch64|arm64) TROJAN_ARCH="linux-arm64" ;;
+        armv7*|armhf) TROJAN_ARCH="linux-armv7" ;;
+        *) TROJAN_ARCH="linux-amd64" ;;
+    esac
+
+    TROJAN_VERSION=$(curl -s --connect-timeout 10 https://api.github.com/repos/trojan-gfw/trojan/releases/latest | jq -r '.tag_name' | sed 's/v//')
+    if [[ -z "$TROJAN_VERSION" ]] || [[ "$TROJAN_VERSION" == "null" ]]; then
+        TROJAN_VERSION="1.16.0"
+        print_warning "Could not detect latest version, using $TROJAN_VERSION"
+    fi
+
+    TROJAN_URL="https://github.com/trojan-gfw/trojan/releases/download/v${TROJAN_VERSION}/trojan-${TROJAN_VERSION}-${TROJAN_ARCH}.tar.xz"
+
+    cd /tmp
+    if ! wget -q --timeout=30 "$TROJAN_URL" -O trojan.tar.xz; then
+        # Fallback to amd64
+        TROJAN_URL="https://github.com/trojan-gfw/trojan/releases/download/v${TROJAN_VERSION}/trojan-${TROJAN_VERSION}-linux-amd64.tar.xz"
+        wget -q --timeout=30 "$TROJAN_URL" -O trojan.tar.xz
+    fi
+    tar -xf trojan.tar.xz
+
+    mkdir -p /usr/local/bin
+    mkdir -p /usr/local/etc/trojan
+
+    cp trojan/trojan /usr/local/bin/
+    chmod +x /usr/local/bin/trojan
+
+    rm -rf trojan trojan.tar.xz
+
+    print_success "Trojan binary installed"
+
+    # Generate password
+    TROJAN_PASSWORD=$(generate_random_password)
+
+    # Create configuration
+    if [[ "$USE_CERT" == true ]]; then
+        cat > /usr/local/etc/trojan/config.json << EOF
+{
+    "run_type": "server",
+    "local_addr": "::",
+    "local_port": 443,
+    "remote_addr": "127.0.0.1",
+    "remote_port": 80,
+    "password": ["$TROJAN_PASSWORD"],
+    "log_level": 1,
+    "ssl": {
+        "cert": "/etc/letsencrypt/live/$DOMAIN/fullchain.pem",
+        "key": "/etc/letsencrypt/live/$DOMAIN/privkey.pem",
+        "key_password": "",
+        "cipher": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256",
+        "cipher_tls13": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256",
+        "prefer_server_cipher": true,
+        "alpn": ["h2", "http/1.1"],
+        "reuse_session": true,
+        "session_ticket": false,
+        "session_timeout": 3600,
+        "plain_http_response": "",
+        "curves": "",
+        "dhparam": ""
+    },
+    "tcp": {
+        "prefer_ipv4": false,
+        "no_delay": true,
+        "keep_alive": true,
+        "reuse_port": true,
+        "fast_open": true,
+        "fast_open_qlen": 20
+    },
+    "mysql": {
+        "enabled": false
+    }
+}
+EOF
+    else
+        # Self-signed certificate for IP-based
+        print_info "Generating self-signed certificate..."
+        mkdir -p /usr/local/etc/trojan/ssl
+        openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+            -keyout /usr/local/etc/trojan/ssl/server.key \
+            -out /usr/local/etc/trojan/ssl/server.crt \
+            -days 3650 -subj "/CN=$DOMAIN" 2>/dev/null
+
+        cat > /usr/local/etc/trojan/config.json << EOF
+{
+    "run_type": "server",
+    "local_addr": "::",
+    "local_port": 443,
+    "remote_addr": "127.0.0.1",
+    "remote_port": 80,
+    "password": ["$TROJAN_PASSWORD"],
+    "log_level": 1,
+    "ssl": {
+        "cert": "/usr/local/etc/trojan/ssl/server.crt",
+        "key": "/usr/local/etc/trojan/ssl/server.key",
+        "key_password": "",
+        "cipher": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256",
+        "cipher_tls13": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256",
+        "prefer_server_cipher": true,
+        "alpn": ["h2", "http/1.1"],
+        "reuse_session": true,
+        "session_ticket": false,
+        "session_timeout": 3600,
+        "plain_http_response": "",
+        "curves": "",
+        "dhparam": ""
+    },
+    "tcp": {
+        "prefer_ipv4": false,
+        "no_delay": true,
+        "keep_alive": true,
+        "reuse_port": true,
+        "fast_open": true,
+        "fast_open_qlen": 20
+    },
+    "mysql": {
+        "enabled": false
+    }
+}
+EOF
+    fi
+
+    print_success "Trojan configuration created"
+
+    # Create systemd service with optimized settings
+    cat > /etc/systemd/system/trojan.service << 'EOF'
+[Unit]
+Description=Trojan-GFW Server (Dual-Stack v4.0)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/trojan -c /usr/local/etc/trojan/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3s
+LimitNOFILE=1048576
+LimitNPROC=1048576
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable trojan > /dev/null 2>&1
+    systemctl start trojan
+
+    sleep 2
+    if systemctl is-active --quiet trojan; then
+        print_success "Trojan service started successfully"
+    else
+        print_error "Failed to start Trojan service"
+        journalctl -u trojan -n 20 --no-pager
+        return 1
+    fi
+
+    # Get server IPs
+    SERVER_IPV4=$(get_main_ip)
+    SERVER_IPV6=$(get_main_ipv6)
+    local IPV4_URL_HOST=$(format_ip_for_url "$SERVER_IPV4")
+    local IPV6_URL_HOST=$(format_ip_for_url "$SERVER_IPV6")
+
+    # Determine SNI
+    if [[ "$USE_CERT" == true ]]; then
+        SNI_VALUE="$DOMAIN"
+    else
+        SNI_VALUE="$DOMAIN"
+    fi
+
+    # Save credentials
+    mkdir -p "$CLIENT_DIR"
+
+    cat > "$CLIENT_DIR/trojan-credentials.txt" << EOF
+Trojan-GFW Server Information (Universal Dual-Stack v4.0)
+==========================================================
+Server (IPv4): $SERVER_IPV4
+Server (IPv6): ${SERVER_IPV6:-N/A}
+Port: 443
+Password: $TROJAN_PASSWORD
+SNI: $SNI_VALUE
+Allow Insecure: $( [[ "$USE_CERT" == true ]] && echo "false" || echo "true" )
+
+IPv4 URI:
+trojan://$TROJAN_PASSWORD@$IPV4_URL_HOST:443?sni=$SNI_VALUE#Trojan-IPv4
+EOF
+
+    if [[ -n "$SERVER_IPV6" ]]; then
+        cat >> "$CLIENT_DIR/trojan-credentials.txt" << EOF
+
+IPv6 URI:
+trojan://$TROJAN_PASSWORD@$IPV6_URL_HOST:443?sni=$SNI_VALUE#Trojan-IPv6
+
+=== IMPORTANT: Client Network Mode Settings ===
+- If your device uses IPv4 network: Use the IPv4 address above
+- If your device uses IPv6 network: Use the IPv6 address above
+- The server accepts BOTH IPv4 and IPv6 connections simultaneously
+EOF
+    fi
+
+    # Generate QR code
+    qrencode -t ANSIUTF8 "trojan://$TROJAN_PASSWORD@$IPV4_URL_HOST:443?sni=$SNI_VALUE#Trojan-IPv4" > "$CLIENT_DIR/trojan-qr.txt" 2>/dev/null
+
+    # Display information
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Trojan Installation Complete! (Universal)    ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Server (IPv4):${NC} $SERVER_IPV4"
+    if [[ -n "$SERVER_IPV6" ]]; then
+        echo -e "${CYAN}Server (IPv6):${NC} $SERVER_IPV6"
+    fi
+    echo -e "${CYAN}Port:${NC} 443"
+    echo -e "${CYAN}Password:${NC} $TROJAN_PASSWORD"
+    echo -e "${CYAN}SNI:${NC} $SNI_VALUE"
+    echo ""
+    echo -e "${YELLOW}IPv4 Connection URI:${NC}"
+    echo "trojan://$TROJAN_PASSWORD@$IPV4_URL_HOST:443?sni=$SNI_VALUE#Trojan-IPv4"
+    if [[ -n "$SERVER_IPV6" ]]; then
+        echo ""
+        echo -e "${YELLOW}IPv6 Connection URI:${NC}"
+        echo "trojan://$TROJAN_PASSWORD@$IPV6_URL_HOST:443?sni=$SNI_VALUE#Trojan-IPv6"
+    fi
+    echo ""
+    if [[ -f "$CLIENT_DIR/trojan-qr.txt" ]]; then
+        cat "$CLIENT_DIR/trojan-qr.txt"
+    fi
+    echo ""
+    print_info "Credentials saved to: $CLIENT_DIR/trojan-credentials.txt"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Trojan on Additional IP (Dual-Stack)
+###############################################################################
+
+add_trojan_on_ip() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Add Trojan on Additional IP (Dual-Stack)    ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    if ! systemctl is-active --quiet trojan; then
+        print_error "Main Trojan service is not installed"
+        print_info "Please install Trojan first (option 1)"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    print_info "Detecting server IP addresses (IPv4 + IPv6)..."
+    echo ""
+    mapfile -t IPV4S < <(get_all_ips)
+    mapfile -t IPV6S < <(get_all_ipv6)
+
+    local ALL_IPS=()
+    local idx=1
+
+    echo -e "${CYAN}Available IPv4 addresses:${NC}"
+    for ip in "${IPV4S[@]}"; do
+        echo "  $idx. $ip"
+        ALL_IPS+=("$ip")
+        ((idx++))
+    done
+
+    if [[ ${#IPV6S[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "${CYAN}Available IPv6 addresses:${NC}"
+        for ip in "${IPV6S[@]}"; do
+            echo "  $idx. $ip"
+            ALL_IPS+=("$ip")
+            ((idx++))
+        done
+    fi
+
+    echo "  $idx. Enter custom IP (IPv4 or IPv6)"
+    echo ""
+
+    print_prompt "Select IP address (1-$idx):"
+    read -r IP_CHOICE
+
+    if [[ $IP_CHOICE -eq $idx ]]; then
+        print_prompt "Enter IP address (IPv4 or IPv6):"
+        read -r ADDITIONAL_IP
+    elif [[ $IP_CHOICE -ge 1 ]] && [[ $IP_CHOICE -lt $idx ]]; then
+        ADDITIONAL_IP="${ALL_IPS[$((IP_CHOICE-1))]}"
+    else
+        print_error "Invalid choice"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    print_info "Using IP: $ADDITIONAL_IP"
+
+    IP_SUFFIX=$(format_ip_suffix "$ADDITIONAL_IP")
+    SERVICE_NAME="trojan-$IP_SUFFIX"
+    CONFIG_FILE="/usr/local/etc/trojan/config-$IP_SUFFIX.json"
+
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_warning "Trojan is already running on $ADDITIONAL_IP"
+        read -p "Press Enter to continue..."
+        return 0
+    fi
+
+    NEW_PASSWORD=$(generate_random_password)
+
+    if [[ -f "/usr/local/etc/trojan/config.json" ]]; then
+        cp /usr/local/etc/trojan/config.json "$CONFIG_FILE"
+        jq --arg ip "$ADDITIONAL_IP" '.local_addr = $ip' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+        jq --arg pass "$NEW_PASSWORD" '.password = [$pass]' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+        print_success "Configuration created"
+    else
+        print_error "Base configuration not found"
+        return 1
+    fi
+
+    if is_ipv6 "$ADDITIONAL_IP"; then
+        ip6tables -C INPUT -d "$ADDITIONAL_IP" -p tcp --dport 443 -j ACCEPT 2>/dev/null || \
+            ip6tables -A INPUT -d "$ADDITIONAL_IP" -p tcp --dport 443 -j ACCEPT
+    fi
+
+    cat > "/etc/systemd/system/$SERVICE_NAME.service" << EOF
+[Unit]
+Description=Trojan-GFW Server on $ADDITIONAL_IP (Dual-Stack v4.0)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/trojan -c $CONFIG_FILE
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=always
+RestartSec=3s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
+    systemctl start "$SERVICE_NAME"
+
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_success "Trojan service started on $ADDITIONAL_IP"
+    else
+        print_error "Failed to start Trojan service"
+        journalctl -u "$SERVICE_NAME" -n 20
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local URL_HOST=$(format_ip_for_url "$ADDITIONAL_IP")
+    cat > "$CLIENT_DIR/trojan-$IP_SUFFIX-credentials.txt" << EOF
+Trojan-GFW Server Information (Dual-Stack)
+============================================
+Server: $ADDITIONAL_IP
+Port: 443
+Password: $NEW_PASSWORD
+SNI: $ADDITIONAL_IP
+Allow Insecure: true
+
+Connection URI:
+trojan://$NEW_PASSWORD@$URL_HOST:443#Trojan-$IP_SUFFIX
+EOF
+
+    qrencode -t ANSIUTF8 "trojan://$NEW_PASSWORD@$URL_HOST:443#Trojan-$IP_SUFFIX" > "$CLIENT_DIR/trojan-$IP_SUFFIX-qr.txt" 2>/dev/null
+
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Trojan Added on Additional IP! (Dual-Stack) ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Server:${NC} $ADDITIONAL_IP"
+    echo -e "${CYAN}Port:${NC} 443"
+    echo -e "${CYAN}Password:${NC} $NEW_PASSWORD"
+    echo ""
+    echo -e "${YELLOW}Connection URI:${NC}"
+    echo "trojan://$NEW_PASSWORD@$URL_HOST:443#Trojan-$IP_SUFFIX"
+    echo ""
+    if [[ -f "$CLIENT_DIR/trojan-$IP_SUFFIX-qr.txt" ]]; then
+        cat "$CLIENT_DIR/trojan-$IP_SUFFIX-qr.txt"
+    fi
+    echo ""
+    print_info "Credentials saved to: $CLIENT_DIR/trojan-$IP_SUFFIX-credentials.txt"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Xray XTLS-Reality Installation (Universal Dual-Stack - v4.0)
+###############################################################################
+
+install_xray() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Xray XTLS-Reality Install (Universal v4.0)  ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    detect_ip_stack
+
+    if systemctl is-active --quiet xray; then
+        print_warning "Xray is already installed and running"
+        read -p "Do you want to reinstall? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+        systemctl stop xray
+    fi
+
+    setup_dual_stack_kernel
+    setup_ipv6_firewall
+
+    # Install dependencies using universal installer
+    print_info "Installing dependencies..."
+    install_packages curl unzip jq qrencode xz-utils ethtool
+    print_success "Dependencies installed"
+
+    # Install Xray
+    print_info "Installing Xray-core..."
+    if ! bash -c "$(curl -L --connect-timeout 30 --max-time 120 https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root 2>/dev/null; then
+        print_error "Failed to install Xray-core via official script"
+        print_info "Trying manual installation..."
+
+        # Manual fallback
+        local XRAY_VER=$(curl -s --connect-timeout 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name')
+        if [[ -z "$XRAY_VER" ]] || [[ "$XRAY_VER" == "null" ]]; then
+            XRAY_VER="v25.3.6"
+        fi
+
+        local ARCH=$(uname -m)
+        case "$ARCH" in
+            x86_64|amd64) XRAY_ARCH="64" ;;
+            aarch64|arm64) XRAY_ARCH="arm64-v8a" ;;
+            armv7*) XRAY_ARCH="arm32-v7a" ;;
+            *) XRAY_ARCH="64" ;;
+        esac
+
+        cd /tmp
+        wget -q --timeout=30 "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-${XRAY_ARCH}.zip" -O xray.zip
+        mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray /var/log/xray
+        unzip -o xray.zip -d /tmp/xray-install > /dev/null 2>&1
+        cp /tmp/xray-install/xray /usr/local/bin/
+        chmod +x /usr/local/bin/xray
+        [[ -f /tmp/xray-install/geoip.dat ]] && cp /tmp/xray-install/geoip.dat /usr/local/share/xray/
+        [[ -f /tmp/xray-install/geosite.dat ]] && cp /tmp/xray-install/geosite.dat /usr/local/share/xray/
+        rm -rf /tmp/xray-install /tmp/xray.zip
+    fi
+
+    if [[ ! -f /usr/local/bin/xray ]]; then
+        print_error "Xray binary not found after installation"
+        return 1
+    fi
+
+    print_success "Xray-core installed"
+
+    # Generate parameters
+    print_info "Generating configuration parameters..."
+
+    UUID=$(generate_uuid)
+    sleep 1
+
+    KEYS=$(/usr/local/bin/xray x25519 2>&1)
+    if [[ $? -ne 0 ]]; then
+        print_error "Failed to generate X25519 keys"
+        return 1
+    fi
+
+    PRIVATE_KEY=$(echo "$KEYS" | grep -iE "Private" | awk '{print $2}')
+    PUBLIC_KEY=$(echo "$KEYS" | grep -iE "Public|Password" | awk '{print $2}')
+
+    if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
+        print_error "Failed to parse X25519 keys"
+        return 1
+    fi
+
+    SHORT_ID=$(generate_short_id 8)
+
+    # Camouflage domain selection
+    echo ""
+    print_prompt "Select camouflage domain for Reality:"
+    echo "  1. www.google.com (default)"
+    echo "  2. www.microsoft.com"
+    echo "  3. www.apple.com"
+    echo "  4. www.amazon.com"
+    echo "  5. Custom domain"
+    read -r CAM_CHOICE
+
+    case $CAM_CHOICE in
+        2) CAMOUFLAGE="www.microsoft.com" ;;
+        3) CAMOUFLAGE="www.apple.com" ;;
+        4) CAMOUFLAGE="www.amazon.com" ;;
+        5)
+            print_prompt "Enter custom domain:"
+            read -r CAMOUFLAGE
+            ;;
+        *) CAMOUFLAGE="www.google.com" ;;
+    esac
+
+    print_info "Using camouflage domain: $CAMOUFLAGE"
+
+    # Create Xray config with speed optimizations
+    mkdir -p /usr/local/etc/xray
+
+    cat > /usr/local/etc/xray/config.json << EOF
+{
+    "log": {
+        "loglevel": "warning",
+        "access": "/var/log/xray/access.log",
+        "error": "/var/log/xray/error.log"
+    },
+    "inbounds": [
+        {
+            "listen": "::",
+            "port": 443,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "$UUID",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": false,
+                    "dest": "$CAMOUFLAGE:443",
+                    "xver": 0,
+                    "serverNames": ["$CAMOUFLAGE"],
+                    "privateKey": "$PRIVATE_KEY",
+                    "shortIds": ["$SHORT_ID"]
+                },
+                "sockopt": {
+                    "tcpKeepAliveIdle": 60,
+                    "tcpKeepAliveInterval": 30,
+                    "tcpFastOpen": true,
+                    "tcpNoDelay": true,
+                    "tcpMptcp": true
+                }
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": ["http", "tls", "quic"]
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "settings": {
+                "domainStrategy": "UseIPv4v6"
+            },
+            "streamSettings": {
+                "sockopt": {
+                    "tcpKeepAliveIdle": 60,
+                    "tcpKeepAliveInterval": 30,
+                    "tcpFastOpen": true,
+                    "tcpNoDelay": true
+                }
+            },
+            "tag": "direct"
+        },
+        {
+            "protocol": "blackhole",
+            "settings": {},
+            "tag": "blocked"
+        }
+    ],
+    "policy": {
+        "levels": {
+            "0": {
+                "handshake": 8,
+                "connIdle": 300,
+                "uplinkOnly": 2,
+                "downlinkOnly": 5,
+                "bufferSize": 64
+            }
+        },
+        "system": {
+            "statsOutboundUplink": false,
+            "statsOutboundDownlink": false
+        }
+    }
+}
+EOF
+
+    print_success "Xray configuration created"
+
+    # Create systemd service
+    if [[ ! -f /etc/systemd/system/xray.service ]]; then
+        cat > /etc/systemd/system/xray.service << 'EOF'
+[Unit]
+Description=Xray XTLS-Reality Server (Dual-Stack v4.0)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3s
+LimitNOFILE=1048576
+LimitNPROC=1048576
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    fi
+
+    mkdir -p /var/log/xray
+    systemctl daemon-reload
+    systemctl enable xray > /dev/null 2>&1
+    systemctl restart xray
+
+    sleep 2
+    if systemctl is-active --quiet xray; then
+        print_success "Xray service started successfully"
+    else
+        print_error "Failed to start Xray service"
+        journalctl -u xray -n 10 --no-pager
+        return 1
+    fi
+
+    # Get server IPs
+    SERVER_IP=$(get_main_ip)
+    SERVER_IPV6=$(get_main_ipv6)
+    local IPV4_URL_HOST=$(format_ip_for_url "$SERVER_IP")
+    local IPV6_URL_HOST=$(format_ip_for_url "$SERVER_IPV6")
+
+    # Save credentials
+    mkdir -p "$CLIENT_DIR"
+
+    cat > "$CLIENT_DIR/xray-credentials.txt" << EOF
+Xray XTLS-Reality Server Information (Universal Dual-Stack v4.0)
+=================================================================
+Server (IPv4): $SERVER_IP
+Server (IPv6): ${SERVER_IPV6:-N/A}
+Port: 443
+UUID: $UUID
+Public Key: $PUBLIC_KEY
+Short ID: $SHORT_ID
+SNI: $CAMOUFLAGE
+Flow: xtls-rprx-vision
+Security: reality
+
+IPv4 URI:
+vless://$UUID@$IPV4_URL_HOST:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#XrayReality-IPv4
+EOF
+
+    if [[ -n "$SERVER_IPV6" ]]; then
+        cat >> "$CLIENT_DIR/xray-credentials.txt" << EOF
+
+IPv6 URI:
+vless://$UUID@$IPV6_URL_HOST:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#XrayReality-IPv6
+
+=== IMPORTANT ===
+- If your device uses IPv4: Use the IPv4 URI
+- If your device uses IPv6: Use the IPv6 URI
+- Server accepts BOTH simultaneously
+EOF
+    fi
+
+    # Generate client configs
+    cat > "$CLIENT_DIR/xray-client-config.json" << EOF
+{
+    "outbounds": [{
+        "protocol": "vless",
+        "settings": {
+            "vnext": [{
+                "address": "$SERVER_IP",
+                "port": 443,
+                "users": [{"id": "$UUID", "encryption": "none", "flow": "xtls-rprx-vision"}]
+            }]
+        },
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "serverName": "$CAMOUFLAGE",
+                "fingerprint": "chrome",
+                "publicKey": "$PUBLIC_KEY",
+                "shortId": "$SHORT_ID"
+            },
+            "sockopt": {"tcpFastOpen": true, "tcpNoDelay": true}
+        }
+    }]
+}
+EOF
+
+    # Generate QR codes
+    qrencode -t ANSIUTF8 "vless://$UUID@$IPV4_URL_HOST:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#XrayReality-IPv4" > "$CLIENT_DIR/xray-qr.txt" 2>/dev/null
+
+    # Display information
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Xray Installation Complete! (Universal)     ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Server (IPv4):${NC} $SERVER_IP"
+    if [[ -n "$SERVER_IPV6" ]]; then
+        echo -e "${CYAN}Server (IPv6):${NC} $SERVER_IPV6"
+    fi
+    echo -e "${CYAN}Port:${NC} 443"
+    echo -e "${CYAN}UUID:${NC} $UUID"
+    echo -e "${CYAN}Public Key:${NC} $PUBLIC_KEY"
+    echo -e "${CYAN}Short ID:${NC} $SHORT_ID"
+    echo -e "${CYAN}SNI:${NC} $CAMOUFLAGE"
+    echo ""
+    echo -e "${YELLOW}IPv4 Connection URI:${NC}"
+    echo "vless://$UUID@$IPV4_URL_HOST:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#XrayReality-IPv4"
+    if [[ -n "$SERVER_IPV6" ]]; then
+        echo ""
+        echo -e "${YELLOW}IPv6 Connection URI:${NC}"
+        echo "vless://$UUID@$IPV6_URL_HOST:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#XrayReality-IPv6"
+    fi
+    echo ""
+    if [[ -f "$CLIENT_DIR/xray-qr.txt" ]]; then
+        cat "$CLIENT_DIR/xray-qr.txt"
+    fi
+    echo ""
+    print_info "Credentials saved to: $CLIENT_DIR/xray-credentials.txt"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Xray on Additional IP (Dual-Stack)
+###############################################################################
+
+add_xray_on_ip() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Add Xray on Additional IP (Dual-Stack)      ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    if ! systemctl is-active --quiet xray; then
+        print_error "Main Xray service is not installed"
+        print_info "Please install Xray first (option 2)"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    print_info "Detecting server IP addresses (IPv4 + IPv6)..."
+    echo ""
+    mapfile -t IPV4S < <(get_all_ips)
+    mapfile -t IPV6S < <(get_all_ipv6)
+
+    local ALL_IPS=()
+    local idx=1
+
+    echo -e "${CYAN}Available IPv4 addresses:${NC}"
+    for ip in "${IPV4S[@]}"; do
+        echo "  $idx. $ip"
+        ALL_IPS+=("$ip")
+        ((idx++))
+    done
+
+    if [[ ${#IPV6S[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "${CYAN}Available IPv6 addresses:${NC}"
+        for ip in "${IPV6S[@]}"; do
+            echo "  $idx. $ip"
+            ALL_IPS+=("$ip")
+            ((idx++))
+        done
+    fi
+
+    echo "  $idx. Enter custom IP (IPv4 or IPv6)"
+    echo ""
+
+    print_prompt "Select IP address (1-$idx):"
+    read -r IP_CHOICE
+
+    if [[ $IP_CHOICE -eq $idx ]]; then
+        print_prompt "Enter IP address (IPv4 or IPv6):"
+        read -r ADDITIONAL_IP
+    elif [[ $IP_CHOICE -ge 1 ]] && [[ $IP_CHOICE -lt $idx ]]; then
+        ADDITIONAL_IP="${ALL_IPS[$((IP_CHOICE-1))]}"
+    else
+        print_error "Invalid choice"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    print_info "Using IP: $ADDITIONAL_IP"
+
+    IP_SUFFIX=$(format_ip_suffix "$ADDITIONAL_IP")
+    SERVICE_NAME="xray-$IP_SUFFIX"
+    CONFIG_FILE="/usr/local/etc/xray/config-$IP_SUFFIX.json"
+
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_warning "Xray is already running on $ADDITIONAL_IP"
+        read -p "Press Enter to continue..."
+        return 0
+    fi
+
+    NEW_UUID=$(generate_uuid)
+    KEYS=$(/usr/local/bin/xray x25519 2>&1)
+    if [[ $? -ne 0 ]]; then
+        print_error "Failed to generate X25519 keys"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    PRIVATE_KEY=$(echo "$KEYS" | grep -iE "Private" | awk '{print $2}')
+    PUBLIC_KEY=$(echo "$KEYS" | grep -iE "Public|Password" | awk '{print $2}')
+    SHORT_ID=$(generate_short_id 8)
+    CAMOUFLAGE="www.google.com"
+
+    # Read camouflage from main config if available
+    if [[ -f /usr/local/etc/xray/config.json ]]; then
+        local main_cam=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json 2>/dev/null)
+        if [[ -n "$main_cam" ]] && [[ "$main_cam" != "null" ]]; then
+            CAMOUFLAGE="$main_cam"
+        fi
+    fi
+
+    local bind_addr="$ADDITIONAL_IP"
+
+    cat > "$CONFIG_FILE" << EOF
+{
+    "log": {"loglevel": "warning"},
+    "inbounds": [{
+        "listen": "$bind_addr",
+        "port": 443,
+        "protocol": "vless",
+        "settings": {
+            "clients": [{"id": "$NEW_UUID", "flow": "xtls-rprx-vision"}],
+            "decryption": "none"
+        },
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "show": false,
+                "dest": "$CAMOUFLAGE:443",
+                "xver": 0,
+                "serverNames": ["$CAMOUFLAGE"],
+                "privateKey": "$PRIVATE_KEY",
+                "shortIds": ["$SHORT_ID"]
+            },
+            "sockopt": {"tcpKeepAliveIdle": 60, "tcpKeepAliveInterval": 30, "tcpFastOpen": true, "tcpNoDelay": true}
+        },
+        "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]}
+    }],
+    "outbounds": [
+        {"protocol": "freedom", "settings": {"domainStrategy": "UseIPv4v6"}, "tag": "direct"},
+        {"protocol": "blackhole", "settings": {}, "tag": "blocked"}
+    ],
+    "policy": {"levels": {"0": {"handshake": 8, "connIdle": 300}}}
+}
+EOF
+
+    if is_ipv6 "$ADDITIONAL_IP"; then
+        ip6tables -C INPUT -d "$ADDITIONAL_IP" -p tcp --dport 443 -j ACCEPT 2>/dev/null || \
+            ip6tables -A INPUT -d "$ADDITIONAL_IP" -p tcp --dport 443 -j ACCEPT
+    fi
+
+    cat > "/etc/systemd/system/$SERVICE_NAME.service" << EOF
+[Unit]
+Description=Xray Server on $ADDITIONAL_IP (Dual-Stack v4.0)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xray run -config $CONFIG_FILE
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=always
+RestartSec=3s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
+    systemctl start "$SERVICE_NAME"
+
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_success "Xray service started on $ADDITIONAL_IP"
+    else
+        print_error "Failed to start Xray service"
+        journalctl -u "$SERVICE_NAME" -n 20
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local URL_HOST=$(format_ip_for_url "$ADDITIONAL_IP")
+    cat > "$CLIENT_DIR/xray-$IP_SUFFIX-credentials.txt" << EOF
+Xray XTLS-Reality Server Information (Additional IP)
+=====================================================
+Server: $ADDITIONAL_IP
+Port: 443
+UUID: $NEW_UUID
+Public Key: $PUBLIC_KEY
+Short ID: $SHORT_ID
+SNI: $CAMOUFLAGE
+Flow: xtls-rprx-vision
+
+Connection URI:
+vless://$NEW_UUID@$URL_HOST:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Xray-$IP_SUFFIX
+EOF
+
+    qrencode -t ANSIUTF8 "vless://$NEW_UUID@$URL_HOST:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Xray-$IP_SUFFIX" > "$CLIENT_DIR/xray-$IP_SUFFIX-qr.txt" 2>/dev/null
+
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Xray Added on Additional IP! (Dual-Stack)   ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Server:${NC} $ADDITIONAL_IP"
+    echo -e "${CYAN}Port:${NC} 443"
+    echo -e "${CYAN}UUID:${NC} $NEW_UUID"
+    echo -e "${CYAN}Public Key:${NC} $PUBLIC_KEY"
+    echo -e "${CYAN}Short ID:${NC} $SHORT_ID"
+    echo ""
+    echo -e "${YELLOW}Connection URI:${NC}"
+    echo "vless://$NEW_UUID@$URL_HOST:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$CAMOUFLAGE&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Xray-$IP_SUFFIX"
+    echo ""
+    if [[ -f "$CLIENT_DIR/xray-$IP_SUFFIX-qr.txt" ]]; then
+        cat "$CLIENT_DIR/xray-$IP_SUFFIX-qr.txt"
+    fi
+    echo ""
+    print_info "Credentials saved to: $CLIENT_DIR/xray-$IP_SUFFIX-credentials.txt"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+
+###############################################################################
+# NEW: VLESS over WebSocket (WS) + TLS with CDN Fronting (v4.0)
+# - Works behind Cloudflare / any CDN
+# - Uses Nginx as TLS terminator + WS reverse proxy
+# - Xray handles VLESS over WS
+# - No flow restriction (WS doesn't support xtls-rprx-vision)
+###############################################################################
+
+install_vless_ws() {
+    clear
+    echo -e "${MAGENTA}╔════════════════════════════════════════════════════╗${NC}"
+    echo -e "${MAGENTA}║   VLESS-WS+TLS with CDN Fronting (v4.0)           ║${NC}"
+    echo -e "${MAGENTA}║   Works behind Cloudflare / any CDN               ║${NC}"
+    echo -e "${MAGENTA}╚════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    detect_ip_stack
+
+    # Check if VLESS-WS is already installed
+    if systemctl is-active --quiet vless-ws; then
+        print_warning "VLESS-WS is already installed and running"
+        read -p "Do you want to reinstall? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+        systemctl stop vless-ws
+    fi
+
+    setup_dual_stack_kernel
+    setup_ipv6_firewall
+
+    # Domain is REQUIRED for WS+TLS with CDN
+    echo ""
+    echo -e "${YELLOW}=== CDN Fronting requires a domain name ===${NC}"
+    echo -e "  1. Point your domain to this server IP (A record)"
+    echo -e "  2. Enable Cloudflare proxy (orange cloud) for CDN fronting"
+    echo -e "  3. Set Cloudflare SSL mode to 'Full' or 'Full (Strict)'"
+    echo ""
+    print_prompt "Enter your domain name (REQUIRED):"
+    read -r WS_DOMAIN
+
+    if [[ -z "$WS_DOMAIN" ]]; then
+        print_error "Domain name is required for VLESS-WS+TLS"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    # WebSocket path
+    local DEFAULT_WS_PATH="/$(generate_short_id 12)"
+    print_prompt "Enter WebSocket path (default: $DEFAULT_WS_PATH):"
+    read -r WS_PATH
+    if [[ -z "$WS_PATH" ]]; then
+        WS_PATH="$DEFAULT_WS_PATH"
+    fi
+    # Ensure path starts with /
+    [[ "$WS_PATH" != /* ]] && WS_PATH="/$WS_PATH"
+
+    # CDN fronting host (optional, for extra obfuscation)
+    print_prompt "Enter CDN fronting host (press Enter to use $WS_DOMAIN):"
+    read -r CDN_HOST
+    if [[ -z "$CDN_HOST" ]]; then
+        CDN_HOST="$WS_DOMAIN"
+    fi
+
+    # Port selection
+    print_prompt "Enter VLESS-WS port (default: 2053, common CDN ports: 443,2053,2083,2087,2096,8443):"
+    read -r WS_PORT
+    if [[ -z "$WS_PORT" ]]; then
+        WS_PORT=2053
+    fi
+
+    print_info "Configuration:"
+    echo -e "  Domain: ${CYAN}$WS_DOMAIN${NC}"
+    echo -e "  WS Path: ${CYAN}$WS_PATH${NC}"
+    echo -e "  CDN Host: ${CYAN}$CDN_HOST${NC}"
+    echo -e "  Port: ${CYAN}$WS_PORT${NC}"
+    echo ""
+
+    # Install dependencies
+    print_info "Installing dependencies..."
+    install_packages nginx certbot python3-certbot-nginx curl unzip jq qrencode
+    print_success "Dependencies installed"
+
+    # Install Xray if not already installed
+    if [[ ! -f /usr/local/bin/xray ]]; then
+        print_info "Installing Xray-core..."
+        if ! bash -c "$(curl -L --connect-timeout 30 --max-time 120 https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root 2>/dev/null; then
+            local XRAY_VER=$(curl -s --connect-timeout 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name')
+            [[ -z "$XRAY_VER" || "$XRAY_VER" == "null" ]] && XRAY_VER="v25.3.6"
+            local ARCH=$(uname -m)
+            case "$ARCH" in
+                x86_64|amd64) XRAY_ARCH="64" ;;
+                aarch64|arm64) XRAY_ARCH="arm64-v8a" ;;
+                *) XRAY_ARCH="64" ;;
+            esac
+            cd /tmp
+            wget -q --timeout=30 "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-${XRAY_ARCH}.zip" -O xray.zip
+            mkdir -p /usr/local/bin /usr/local/share/xray /var/log/xray
+            unzip -o xray.zip -d /tmp/xray-install > /dev/null 2>&1
+            cp /tmp/xray-install/xray /usr/local/bin/
+            chmod +x /usr/local/bin/xray
+            rm -rf /tmp/xray-install /tmp/xray.zip
+        fi
+        print_success "Xray-core installed"
+    fi
+
+    # Generate UUID
+    VLESS_WS_UUID=$(generate_uuid)
+
+    # Configure Nginx for TLS termination + WS reverse proxy
+    print_info "Configuring Nginx as TLS terminator + WS proxy..."
+
+    # Stop nginx temporarily for cert
+    systemctl stop nginx 2>/dev/null
+
+    # Create basic nginx config for cert acquisition
+    cat > /etc/nginx/sites-available/vless-ws << EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $WS_DOMAIN;
+    root /var/www/html;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+EOF
+
+    ln -sf /etc/nginx/sites-available/vless-ws /etc/nginx/sites-enabled/vless-ws
+    rm -f /etc/nginx/sites-enabled/default 2>/dev/null
+
+    # Create web root
+    mkdir -p /var/www/html
+    cat > /var/www/html/index.html << 'HTMLEOF'
+<!DOCTYPE html>
+<html>
+<head><title>Welcome</title>
+<style>body{font-family:Arial;text-align:center;padding:50px;background:#f0f0f0;}
+h1{color:#333;}.container{max-width:600px;margin:0 auto;background:#fff;padding:40px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.1);}</style>
+</head>
+<body><div class="container"><h1>Welcome</h1><p>Server is running normally.</p></div></body>
+</html>
+HTMLEOF
+
+    systemctl start nginx
+
+    # Obtain SSL certificate
+    print_info "Obtaining SSL certificate for $WS_DOMAIN..."
+    certbot certonly --webroot -w /var/www/html -d "$WS_DOMAIN" \
+        --non-interactive --agree-tos --register-unsafely-without-email 2>/dev/null
+
+    if [[ $? -ne 0 ]]; then
+        # Try standalone method
+        systemctl stop nginx
+        certbot certonly --standalone -d "$WS_DOMAIN" \
+            --non-interactive --agree-tos --register-unsafely-without-email 2>/dev/null
+
+        if [[ $? -ne 0 ]]; then
+            print_error "Failed to obtain SSL certificate"
+            print_info "If using Cloudflare, make sure proxy is OFF (grey cloud) during cert setup"
+            print_info "Then turn it back ON after certificate is obtained"
+            read -p "Press Enter to retry or Ctrl+C to cancel..."
+
+            certbot certonly --standalone -d "$WS_DOMAIN" \
+                --non-interactive --agree-tos --register-unsafely-without-email
+
+            if [[ $? -ne 0 ]]; then
+                print_error "Certificate acquisition failed. Generating self-signed..."
+                mkdir -p /etc/letsencrypt/live/$WS_DOMAIN
+                openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+                    -keyout /etc/letsencrypt/live/$WS_DOMAIN/privkey.pem \
+                    -out /etc/letsencrypt/live/$WS_DOMAIN/fullchain.pem \
+                    -days 3650 -subj "/CN=$WS_DOMAIN" 2>/dev/null
+            fi
+        fi
+    fi
+
+    print_success "SSL certificate ready"
+
+    # Fix permissions
+    chmod +rx /etc/letsencrypt/live 2>/dev/null
+    chmod +rx /etc/letsencrypt/archive 2>/dev/null
+    chmod -R +r /etc/letsencrypt/archive/"$WS_DOMAIN" 2>/dev/null
+
+    # Xray VLESS-WS internal port (Nginx proxies to this)
+    local XRAY_WS_PORT=10086
+
+    # Create full Nginx config with TLS + WS proxy
+    cat > /etc/nginx/sites-available/vless-ws << EOF
+# VLESS-WS+TLS CDN Fronting Configuration (v4.0)
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $WS_DOMAIN;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen $WS_PORT ssl http2;
+    listen [::]:$WS_PORT ssl http2;
+    server_name $WS_DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$WS_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$WS_DOMAIN/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=63072000" always;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-Frame-Options DENY;
+
+    # WebSocket path - proxy to Xray
+    location $WS_PATH {
+        proxy_redirect off;
+        proxy_pass http://127.0.0.1:$XRAY_WS_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # WebSocket optimizations
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_connect_timeout 60s;
+        proxy_buffering off;
+        proxy_buffer_size 8k;
+    }
+
+    # Default - serve normal web content (camouflage)
+    location / {
+        root /var/www/html;
+        index index.html;
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOF
+
+    # Create Xray VLESS-WS config
+    mkdir -p /usr/local/etc/xray
+    cat > /usr/local/etc/xray/config-vless-ws.json << EOF
+{
+    "log": {
+        "loglevel": "warning",
+        "access": "/var/log/xray/vless-ws-access.log",
+        "error": "/var/log/xray/vless-ws-error.log"
+    },
+    "inbounds": [
+        {
+            "listen": "127.0.0.1",
+            "port": $XRAY_WS_PORT,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "$VLESS_WS_UUID"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "ws",
+                "wsSettings": {
+                    "path": "$WS_PATH",
+                    "headers": {
+                        "Host": "$CDN_HOST"
+                    }
+                },
+                "sockopt": {
+                    "tcpKeepAliveIdle": 60,
+                    "tcpKeepAliveInterval": 30,
+                    "tcpFastOpen": true,
+                    "tcpNoDelay": true
+                }
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": ["http", "tls"]
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "settings": {
+                "domainStrategy": "UseIPv4v6"
+            },
+            "streamSettings": {
+                "sockopt": {
+                    "tcpKeepAliveIdle": 60,
+                    "tcpKeepAliveInterval": 30,
+                    "tcpFastOpen": true,
+                    "tcpNoDelay": true
+                }
+            },
+            "tag": "direct"
+        },
+        {
+            "protocol": "blackhole",
+            "settings": {},
+            "tag": "blocked"
+        }
+    ],
+    "policy": {
+        "levels": {
+            "0": {
+                "handshake": 8,
+                "connIdle": 300,
+                "uplinkOnly": 2,
+                "downlinkOnly": 5,
+                "bufferSize": 64
+            }
+        }
+    }
+}
+EOF
+
+    # Create systemd service for VLESS-WS
+    cat > /etc/systemd/system/vless-ws.service << EOF
+[Unit]
+Description=VLESS-WS+TLS CDN Fronting Server (v4.0)
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config-vless-ws.json
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=always
+RestartSec=3s
+LimitNOFILE=1048576
+LimitNPROC=1048576
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Open firewall port
+    iptables -C INPUT -p tcp --dport "$WS_PORT" -j ACCEPT 2>/dev/null || \
+        iptables -A INPUT -p tcp --dport "$WS_PORT" -j ACCEPT
+    ip6tables -C INPUT -p tcp --dport "$WS_PORT" -j ACCEPT 2>/dev/null || \
+        ip6tables -A INPUT -p tcp --dport "$WS_PORT" -j ACCEPT
+
+    # Start services
+    mkdir -p /var/log/xray
+    systemctl daemon-reload
+    systemctl enable nginx > /dev/null 2>&1
+    systemctl enable vless-ws > /dev/null 2>&1
+    systemctl restart nginx
+    systemctl restart vless-ws
+
+    sleep 2
+
+    local ws_ok=true
+    if ! systemctl is-active --quiet vless-ws; then
+        print_error "VLESS-WS service failed to start"
+        journalctl -u vless-ws -n 10 --no-pager
+        ws_ok=false
+    fi
+
+    if ! systemctl is-active --quiet nginx; then
+        print_error "Nginx failed to start"
+        journalctl -u nginx -n 10 --no-pager
+        ws_ok=false
+    fi
+
+    if [[ "$ws_ok" == true ]]; then
+        print_success "VLESS-WS+TLS service started successfully"
+    fi
+
+    # Get server IPs
+    SERVER_IP=$(get_main_ip)
+    SERVER_IPV6=$(get_main_ipv6)
+
+    # Save credentials
+    mkdir -p "$CLIENT_DIR"
+
+    cat > "$CLIENT_DIR/vless-ws-credentials.txt" << EOF
+VLESS-WS+TLS CDN Fronting Server Information (v4.0)
+=====================================================
+Domain: $WS_DOMAIN
+Server (IPv4): $SERVER_IP
+Server (IPv6): ${SERVER_IPV6:-N/A}
+Port: $WS_PORT
+UUID: $VLESS_WS_UUID
+Network: ws
+WS Path: $WS_PATH
+CDN Host: $CDN_HOST
+Security: tls
+SNI: $WS_DOMAIN
+
+=== CDN Fronting Setup ===
+1. Point domain A record to: $SERVER_IP
+2. Enable Cloudflare proxy (orange cloud)
+3. Set SSL mode to: Full (Strict)
+4. Cloudflare will handle TLS to client
+5. Nginx handles TLS from Cloudflare to server
+
+=== Connection URI (Direct) ===
+vless://$VLESS_WS_UUID@$WS_DOMAIN:$WS_PORT?encryption=none&security=tls&sni=$WS_DOMAIN&type=ws&host=$CDN_HOST&path=$(echo "$WS_PATH" | sed 's|/|%2F|g')#VLESS-WS-CDN
+
+=== Connection URI (via CDN/Cloudflare) ===
+vless://$VLESS_WS_UUID@$CDN_HOST:$WS_PORT?encryption=none&security=tls&sni=$WS_DOMAIN&type=ws&host=$CDN_HOST&path=$(echo "$WS_PATH" | sed 's|/|%2F|g')#VLESS-WS-CDN
+
+=== Client Configuration ===
+Address: $WS_DOMAIN (or CDN IP)
+Port: $WS_PORT
+UUID: $VLESS_WS_UUID
+Encryption: none
+Network: ws
+WS Path: $WS_PATH
+WS Host: $CDN_HOST
+TLS: enabled
+SNI: $WS_DOMAIN
+Fingerprint: chrome
+EOF
+
+    # Generate client config JSON
+    cat > "$CLIENT_DIR/vless-ws-client-config.json" << EOF
+{
+    "outbounds": [{
+        "protocol": "vless",
+        "settings": {
+            "vnext": [{
+                "address": "$WS_DOMAIN",
+                "port": $WS_PORT,
+                "users": [{"id": "$VLESS_WS_UUID", "encryption": "none"}]
+            }]
+        },
+        "streamSettings": {
+            "network": "ws",
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": "$WS_DOMAIN",
+                "fingerprint": "chrome",
+                "allowInsecure": false
+            },
+            "wsSettings": {
+                "path": "$WS_PATH",
+                "headers": {"Host": "$CDN_HOST"}
+            },
+            "sockopt": {"tcpFastOpen": true, "tcpNoDelay": true}
+        }
+    }]
+}
+EOF
+
+    # Save config for WebUI
+    cat > "$CONFIG_DIR/vless-ws.conf" << EOF
+DOMAIN=$WS_DOMAIN
+PORT=$WS_PORT
+UUID=$VLESS_WS_UUID
+WS_PATH=$WS_PATH
+CDN_HOST=$CDN_HOST
+XRAY_WS_PORT=$XRAY_WS_PORT
+EOF
+
+    # Generate QR code
+    local WS_URI="vless://$VLESS_WS_UUID@$WS_DOMAIN:$WS_PORT?encryption=none&security=tls&sni=$WS_DOMAIN&type=ws&host=$CDN_HOST&path=$(echo "$WS_PATH" | sed 's|/|%2F|g')#VLESS-WS-CDN"
+    qrencode -t ANSIUTF8 "$WS_URI" > "$CLIENT_DIR/vless-ws-qr.txt" 2>/dev/null
+
+    # Display information
+    clear
+    echo -e "${MAGENTA}╔════════════════════════════════════════════════════╗${NC}"
+    echo -e "${MAGENTA}║   VLESS-WS+TLS CDN Fronting - Complete!            ║${NC}"
+    echo -e "${MAGENTA}╚════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Domain:${NC} $WS_DOMAIN"
+    echo -e "${CYAN}Server (IPv4):${NC} $SERVER_IP"
+    if [[ -n "$SERVER_IPV6" ]]; then
+        echo -e "${CYAN}Server (IPv6):${NC} $SERVER_IPV6"
+    fi
+    echo -e "${CYAN}Port:${NC} $WS_PORT"
+    echo -e "${CYAN}UUID:${NC} $VLESS_WS_UUID"
+    echo -e "${CYAN}WS Path:${NC} $WS_PATH"
+    echo -e "${CYAN}CDN Host:${NC} $CDN_HOST"
+    echo -e "${CYAN}Security:${NC} TLS"
+    echo ""
+    echo -e "${YELLOW}Connection URI:${NC}"
+    echo "$WS_URI"
+    echo ""
+    echo -e "${MAGENTA}=== CDN Fronting Setup ===${NC}"
+    echo -e "  1. Point domain A record to: ${GREEN}$SERVER_IP${NC}"
+    echo -e "  2. Enable Cloudflare proxy (orange cloud)"
+    echo -e "  3. Set SSL mode to: ${GREEN}Full (Strict)${NC}"
+    echo ""
+    if [[ -f "$CLIENT_DIR/vless-ws-qr.txt" ]]; then
+        cat "$CLIENT_DIR/vless-ws-qr.txt"
+    fi
+    echo ""
+    print_info "Credentials saved to: $CLIENT_DIR/vless-ws-credentials.txt"
+    print_info "Client config saved to: $CLIENT_DIR/vless-ws-client-config.json"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+
+###############################################################################
+# View Connection Info (Dual-Stack + VLESS-WS)
+###############################################################################
+
+view_connection_info() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Connection Information (Universal v4.0)      ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    local found=false
+
+    # Show Trojan
+    if systemctl is-active --quiet trojan; then
+        found=true
+        echo -e "${CYAN}=== Trojan-GFW (Main) ===${NC}"
+        if [[ -f "$CLIENT_DIR/trojan-credentials.txt" ]]; then
+            cat "$CLIENT_DIR/trojan-credentials.txt"
+            echo ""
+            if [[ -f "$CLIENT_DIR/trojan-qr.txt" ]]; then
+                cat "$CLIENT_DIR/trojan-qr.txt"
+            fi
+        fi
+        echo ""
+    fi
+
+    # Show additional Trojan instances
+    for service in /etc/systemd/system/trojan-*.service; do
+        if [[ -f "$service" ]]; then
+            SERVICE_NAME=$(basename "$service" .service)
+            IP_SUFFIX=${SERVICE_NAME#trojan-}
+            if systemctl is-active --quiet "$SERVICE_NAME"; then
+                found=true
+                echo -e "${CYAN}=== Trojan-GFW ($IP_SUFFIX) ===${NC}"
+                if [[ -f "$CLIENT_DIR/trojan-$IP_SUFFIX-credentials.txt" ]]; then
+                    cat "$CLIENT_DIR/trojan-$IP_SUFFIX-credentials.txt"
+                    echo ""
+                fi
+            fi
+        fi
+    done
+
+    # Show main Xray
+    if systemctl is-active --quiet xray; then
+        found=true
+        echo -e "${CYAN}=== Xray XTLS-Reality (Main) ===${NC}"
+        if [[ -f "$CLIENT_DIR/xray-credentials.txt" ]]; then
+            cat "$CLIENT_DIR/xray-credentials.txt"
+            echo ""
+            if [[ -f "$CLIENT_DIR/xray-qr.txt" ]]; then
+                echo -e "${YELLOW}QR Code:${NC}"
+                cat "$CLIENT_DIR/xray-qr.txt"
+            fi
+        fi
+        echo ""
+    fi
+
+    # Show additional Xray instances
+    for service in /etc/systemd/system/xray-*.service; do
+        if [[ -f "$service" ]]; then
+            SERVICE_NAME=$(basename "$service" .service)
+            IP_SUFFIX=${SERVICE_NAME#xray-}
+            if systemctl is-active --quiet "$SERVICE_NAME"; then
+                found=true
+                echo -e "${CYAN}=== Xray XTLS-Reality ($IP_SUFFIX) ===${NC}"
+                if [[ -f "$CLIENT_DIR/xray-$IP_SUFFIX-credentials.txt" ]]; then
+                    cat "$CLIENT_DIR/xray-$IP_SUFFIX-credentials.txt"
+                    echo ""
+                fi
+            fi
+        fi
+    done
+
+    # Show VLESS-WS
+    if systemctl is-active --quiet vless-ws; then
+        found=true
+        echo -e "${MAGENTA}=== VLESS-WS+TLS CDN Fronting ===${NC}"
+        if [[ -f "$CLIENT_DIR/vless-ws-credentials.txt" ]]; then
+            cat "$CLIENT_DIR/vless-ws-credentials.txt"
+            echo ""
+            if [[ -f "$CLIENT_DIR/vless-ws-qr.txt" ]]; then
+                echo -e "${YELLOW}QR Code:${NC}"
+                cat "$CLIENT_DIR/vless-ws-qr.txt"
+            fi
+        fi
+        echo ""
+    fi
+
+    if [[ "$found" == false ]]; then
+        print_warning "No VPN services are currently running"
+    fi
+
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Gaming Optimization (Enhanced v4.0)
+###############################################################################
+
+optimize_for_gaming() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Gaming Optimization Module (Universal v4.0) ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    setup_dual_stack_kernel
+    setup_ipv6_firewall
+    enable_bbr
+    optimize_network
+    increase_file_limits
+    optimize_irq_affinity
+    optimize_mtu
+    setup_tcp_tuned_profile
+
+    # Restart all VPN services
+    for svc in trojan xray vless-ws; do
+        if systemctl is-active --quiet "$svc"; then
+            print_info "Restarting $svc to apply optimizations..."
+            systemctl restart "$svc"
+            sleep 1
+            if systemctl is-active --quiet "$svc"; then
+                print_success "$svc restarted"
+            fi
+        fi
+    done
+
+    echo ""
+    print_success "All gaming optimizations applied! (IPv4 + IPv6)"
+    print_info "Your server is now optimized for low-latency gaming"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Speed Test Module (IPv4 vs IPv6)
+###############################################################################
+
+speed_test() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Network Speed & Latency Test                ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    # IPv4 latency
+    echo -e "${CYAN}=== IPv4 Latency Test ===${NC}"
+    for target in "8.8.8.8:Google DNS" "1.1.1.1:Cloudflare"; do
+        local ip="${target%%:*}"
+        local name="${target##*:}"
+        if ping -4 -c 5 -W 3 "$ip" &> /dev/null; then
+            local ms=$(ping -4 -c 5 -W 3 "$ip" 2>/dev/null | tail -1 | awk -F'/' '{print $5}')
+            echo -e "  $name ($ip): ${GREEN}${ms}ms${NC}"
+        else
+            echo -e "  $name ($ip): ${RED}Unreachable${NC}"
+        fi
+    done
+    echo ""
+
+    # IPv6 latency
+    echo -e "${CYAN}=== IPv6 Latency Test ===${NC}"
+    for target in "2001:4860:4860::8888:Google DNS" "2606:4700:4700::1111:Cloudflare"; do
+        local ip="${target%%:*:*:*:*}"
+        local name="${target##*:}"
+        # Re-extract properly
+        ip=$(echo "$target" | rev | cut -d: -f2- | rev)
+        name=$(echo "$target" | rev | cut -d: -f1 | rev)
+        if ping -6 -c 5 -W 3 "$ip" &> /dev/null; then
+            local ms=$(ping -6 -c 5 -W 3 "$ip" 2>/dev/null | tail -1 | awk -F'/' '{print $5}')
+            echo -e "  $name: ${GREEN}${ms}ms${NC}"
+        else
+            echo -e "  $name: ${YELLOW}Not available${NC}"
+        fi
+    done
+    echo ""
+
+    # Download speed
+    echo -e "${CYAN}=== Download Speed Test ===${NC}"
+    print_info "Testing IPv4 download speed..."
+    local ipv4_speed=$(curl -4 -s -o /dev/null -w '%{speed_download}' --connect-timeout 10 --max-time 15 http://speedtest.tele2.net/1MB.zip 2>/dev/null)
+    if [[ -n "$ipv4_speed" ]] && [[ "$ipv4_speed" != "0.000" ]]; then
+        local ipv4_mbps=$(echo "scale=2; $ipv4_speed / 1048576" | bc 2>/dev/null)
+        echo -e "  IPv4 Download: ${GREEN}${ipv4_mbps} MB/s${NC}"
+    else
+        echo -e "  IPv4 Download: ${RED}Failed${NC}"
+    fi
+
+    print_info "Testing IPv6 download speed..."
+    local ipv6_speed=$(curl -6 -s -o /dev/null -w '%{speed_download}' --connect-timeout 10 --max-time 15 http://speedtest.tele2.net/1MB.zip 2>/dev/null)
+    if [[ -n "$ipv6_speed" ]] && [[ "$ipv6_speed" != "0.000" ]]; then
+        local ipv6_mbps=$(echo "scale=2; $ipv6_speed / 1048576" | bc 2>/dev/null)
+        echo -e "  IPv6 Download: ${GREEN}${ipv6_mbps} MB/s${NC}"
+    else
+        echo -e "  IPv6 Download: ${YELLOW}Not available${NC}"
+    fi
+    echo ""
+
+    # Optimization status
+    echo -e "${CYAN}=== Optimization Status ===${NC}"
+    local cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    echo -e "  Congestion Control: ${CYAN}$cc${NC} $([ "$cc" == "bbr" ] && echo -e "${GREEN}(optimal)${NC}")"
+
+    local tfo=$(sysctl -n net.ipv4.tcp_fastopen 2>/dev/null)
+    echo -e "  TCP Fast Open: ${CYAN}$tfo${NC} $([ "$tfo" == "3" ] && echo -e "${GREEN}(client+server)${NC}")"
+
+    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    echo -e "  Queue Discipline: ${CYAN}$qdisc${NC}"
+
+    local nofile=$(ulimit -n 2>/dev/null)
+    echo -e "  File Descriptors: ${CYAN}$nofile${NC}"
+
+    local bv6=$(sysctl -n net.ipv6.bindv6only 2>/dev/null)
+    echo -e "  Dual-Stack Binding: $([ "$bv6" == "0" ] && echo -e "${GREEN}Enabled${NC}" || echo -e "${RED}Disabled${NC}")"
+
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# IPv6 Diagnostics
+###############################################################################
+
+ipv6_diagnostics() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   IPv6 Diagnostics & Status (v4.0)            ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    echo -e "${CYAN}=== Network Interfaces ===${NC}"
+    echo -e "${YELLOW}IPv4 Addresses:${NC}"
+    ip -4 addr show | grep 'inet ' | awk '{print "  " $2 " on " $NF}'
+    echo ""
+    echo -e "${YELLOW}IPv6 Addresses:${NC}"
+    ip -6 addr show | grep 'inet6 ' | awk '{print "  " $2 " scope " $4 " on " $NF}'
+    echo ""
+
+    echo -e "${CYAN}=== Public IPs ===${NC}"
+    echo -e "  Public IPv4: ${GREEN}$(get_main_ip)${NC}"
+    local pub6=$(get_main_ipv6)
+    echo -e "  Public IPv6: $([ -n "$pub6" ] && echo -e "${GREEN}$pub6${NC}" || echo -e "${YELLOW}Not detected${NC}")"
+    echo ""
+
+    echo -e "${CYAN}=== Kernel IPv6 Settings ===${NC}"
+    for param in "net.ipv6.conf.all.disable_ipv6" "net.ipv6.conf.all.forwarding" "net.ipv6.conf.all.accept_ra" "net.ipv6.bindv6only"; do
+        local val=$(sysctl -n "$param" 2>/dev/null)
+        echo -e "  $param = $val"
+    done
+    echo ""
+
+    echo -e "${CYAN}=== VPN Service Binding ===${NC}"
+    for svc in trojan xray vless-ws; do
+        if systemctl is-active --quiet "$svc"; then
+            echo -e "  ${GREEN}$svc:${NC} $(ss -tlnp | grep -E "$svc|xray" | awk '{print $4}' | head -3 | tr '\n' ' ')"
+        fi
+    done
+    echo ""
+
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Repair Dual-Stack
+###############################################################################
+
+repair_dual_stack() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Repair Dual-Stack IPv4/IPv6 (v4.0)          ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    print_info "Running comprehensive dual-stack repair..."
+    echo ""
+
+    echo -e "${CYAN}Step 1: Fixing kernel IPv6 settings...${NC}"
+    setup_dual_stack_kernel
+    echo ""
+
+    echo -e "${CYAN}Step 2: Fixing IPv6 firewall rules...${NC}"
+    setup_ipv6_firewall
+    echo ""
+
+    # Fix Trojan
+    if [[ -f /usr/local/etc/trojan/config.json ]]; then
+        echo -e "${CYAN}Step 3: Fixing Trojan configuration...${NC}"
+        local current_addr=$(jq -r '.local_addr' /usr/local/etc/trojan/config.json 2>/dev/null)
+        if [[ "$current_addr" != "::" ]]; then
+            jq '.local_addr = "::"' /usr/local/etc/trojan/config.json > /tmp/trojan-fix.json && \
+                mv /tmp/trojan-fix.json /usr/local/etc/trojan/config.json
+            print_success "Trojan config fixed to listen on :: (dual-stack)"
+        else
+            print_success "Trojan already configured for dual-stack"
+        fi
+
+        jq '.tcp.keep_alive = true | .tcp.no_delay = true | .tcp.reuse_port = true | .tcp.fast_open = true | .tcp.prefer_ipv4 = false' \
+            /usr/local/etc/trojan/config.json > /tmp/trojan-fix.json && \
+            mv /tmp/trojan-fix.json /usr/local/etc/trojan/config.json 2>/dev/null
+
+        if systemctl is-active --quiet trojan; then
+            systemctl restart trojan
+            sleep 2
+            systemctl is-active --quiet trojan && print_success "Trojan restarted" || print_error "Trojan failed to restart"
+        fi
+        echo ""
+    fi
+
+    # Fix Xray
+    if [[ -f /usr/local/etc/xray/config.json ]]; then
+        echo -e "${CYAN}Step 4: Fixing Xray configuration...${NC}"
+        local xray_listen=$(jq -r '.inbounds[0].listen' /usr/local/etc/xray/config.json 2>/dev/null)
+        if [[ "$xray_listen" != "::" ]]; then
+            jq '.inbounds[0].listen = "::"' /usr/local/etc/xray/config.json > /tmp/xray-fix.json && \
+                mv /tmp/xray-fix.json /usr/local/etc/xray/config.json
+            print_success "Xray config fixed to listen on :: (dual-stack)"
+        else
+            print_success "Xray already configured for dual-stack"
+        fi
+
+        # Fix sockopt
+        jq '.inbounds[0].streamSettings.sockopt = {"tcpKeepAliveIdle": 60, "tcpKeepAliveInterval": 30, "tcpFastOpen": true, "tcpNoDelay": true}' \
+            /usr/local/etc/xray/config.json > /tmp/xray-fix.json && \
+            mv /tmp/xray-fix.json /usr/local/etc/xray/config.json 2>/dev/null
+
+        jq '.outbounds[0].settings.domainStrategy = "UseIPv4v6"' \
+            /usr/local/etc/xray/config.json > /tmp/xray-fix.json && \
+            mv /tmp/xray-fix.json /usr/local/etc/xray/config.json 2>/dev/null
+
+        if systemctl is-active --quiet xray; then
+            systemctl restart xray
+            sleep 2
+            systemctl is-active --quiet xray && print_success "Xray restarted" || print_error "Xray failed to restart"
+        fi
+        echo ""
+    fi
+
+    # Verify
+    echo -e "${CYAN}Step 5: Verification...${NC}"
+    echo -e "  ${YELLOW}Service binding status:${NC}"
+    ss -tlnp | grep ':443' | awk '{print "    " $4 " (" $6 ")"}'
+    echo ""
+
+    print_success "Dual-stack repair complete!"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Uninstall
+###############################################################################
+
+uninstall_vpn() {
+    clear
+    echo -e "${RED}╔════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║   Uninstall VPN Services               ║${NC}"
+    echo -e "${RED}╚════════════════════════════════════════╝${NC}"
+    echo ""
+
+    print_warning "This will remove all VPN services and configurations"
+    read -p "Are you sure? (yes/no): " -r CONFIRM
+
+    if [[ "$CONFIRM" != "yes" ]]; then
+        print_info "Uninstall cancelled"
+        return 0
+    fi
+
+    # Stop and remove Trojan
+    if systemctl is-active --quiet trojan; then
+        print_info "Removing Trojan..."
+        systemctl stop trojan
+        systemctl disable trojan > /dev/null 2>&1
+        rm -f /etc/systemd/system/trojan.service
+        rm -f /usr/local/bin/trojan
+        rm -rf /usr/local/etc/trojan
+        print_success "Trojan removed"
+    fi
+
+    for service in /etc/systemd/system/trojan-*.service; do
+        if [[ -f "$service" ]]; then
+            SERVICE_NAME=$(basename "$service" .service)
+            systemctl stop "$SERVICE_NAME" 2>/dev/null
+            systemctl disable "$SERVICE_NAME" > /dev/null 2>&1
+            rm -f "$service"
+            print_success "$SERVICE_NAME removed"
+        fi
+    done
+
+    # Stop and remove Xray
+    if systemctl is-active --quiet xray; then
+        print_info "Removing Xray..."
+        systemctl stop xray
+        systemctl disable xray > /dev/null 2>&1
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove > /dev/null 2>&1
+        rm -f /etc/systemd/system/xray.service
+        print_success "Xray removed"
+    fi
+
+    for service in /etc/systemd/system/xray-*.service; do
+        if [[ -f "$service" ]]; then
+            SERVICE_NAME=$(basename "$service" .service)
+            systemctl stop "$SERVICE_NAME" 2>/dev/null
+            systemctl disable "$SERVICE_NAME" > /dev/null 2>&1
+            rm -f "$service"
+            print_success "$SERVICE_NAME removed"
+        fi
+    done
+
+    # Stop and remove VLESS-WS
+    if systemctl is-active --quiet vless-ws; then
+        print_info "Removing VLESS-WS..."
+        systemctl stop vless-ws
+        systemctl disable vless-ws > /dev/null 2>&1
+        rm -f /etc/systemd/system/vless-ws.service
+        rm -f /usr/local/etc/xray/config-vless-ws.json
+        rm -f /etc/nginx/sites-enabled/vless-ws
+        rm -f /etc/nginx/sites-available/vless-ws
+        systemctl restart nginx 2>/dev/null
+        print_success "VLESS-WS removed"
+    fi
+
+    # Stop and remove WebUI
+    if systemctl is-active --quiet vpn-webui; then
+        print_info "Removing Web UI..."
+        systemctl stop vpn-webui
+        systemctl disable vpn-webui > /dev/null 2>&1
+        rm -f /etc/systemd/system/vpn-webui.service
+        rm -rf "$WEBUI_DIR"
+        print_success "Web UI removed"
+    fi
+
+    # Remove client configs
+    if [[ -d "$CLIENT_DIR" ]]; then
+        rm -rf "$CLIENT_DIR"
+        print_success "Client configurations removed"
+    fi
+
+    # Remove config dir
+    rm -rf "$CONFIG_DIR" 2>/dev/null
+
+    systemctl daemon-reload
+
+    echo ""
+    print_success "Uninstall complete!"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Protocol Switching
+###############################################################################
+
+switch_protocol() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   Switch Protocol (Main IP) - Universal       ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    echo -e "${CYAN}Current Status:${NC}"
+    for svc in trojan xray vless-ws; do
+        if systemctl is-active --quiet "$svc"; then
+            echo -e "  ${GREEN}[✓]${NC} $svc: Running"
+        else
+            echo -e "  ${RED}[✗]${NC} $svc: Stopped"
+        fi
+    done
+    echo ""
+
+    echo -e "${YELLOW}Options:${NC}"
+    echo -e "  ${CYAN}1.${NC} Start/Restart Trojan"
+    echo -e "  ${CYAN}2.${NC} Start/Restart Xray Reality"
+    echo -e "  ${CYAN}3.${NC} Start/Restart VLESS-WS"
+    echo -e "  ${CYAN}4.${NC} Stop all protocols"
+    echo -e "  ${CYAN}5.${NC} Start all protocols"
+    echo -e "  ${CYAN}0.${NC} Cancel"
+    echo ""
+
+    print_prompt "Enter your choice:"
+    read -r SWITCH_CHOICE
+
+    case $SWITCH_CHOICE in
+        1)
+            if [[ -f /usr/local/bin/trojan ]]; then
+                systemctl stop xray 2>/dev/null
+                systemctl restart trojan
+                sleep 2
+                systemctl is-active --quiet trojan && print_success "Trojan started" || print_error "Failed to start Trojan"
+            else
+                print_error "Trojan is not installed"
+            fi
+            ;;
+        2)
+            if [[ -f /usr/local/bin/xray ]] && [[ -f /usr/local/etc/xray/config.json ]]; then
+                systemctl stop trojan 2>/dev/null
+                systemctl restart xray
+                sleep 2
+                systemctl is-active --quiet xray && print_success "Xray started" || print_error "Failed to start Xray"
+            else
+                print_error "Xray Reality is not installed"
+            fi
+            ;;
+        3)
+            if [[ -f /usr/local/etc/xray/config-vless-ws.json ]]; then
+                systemctl restart nginx 2>/dev/null
+                systemctl restart vless-ws
+                sleep 2
+                systemctl is-active --quiet vless-ws && print_success "VLESS-WS started" || print_error "Failed to start VLESS-WS"
+            else
+                print_error "VLESS-WS is not installed"
+            fi
+            ;;
+        4)
+            for svc in trojan xray vless-ws; do
+                systemctl stop "$svc" 2>/dev/null
+            done
+            print_success "All protocols stopped"
+            ;;
+        5)
+            for svc in trojan xray vless-ws; do
+                if [[ -f "/etc/systemd/system/$svc.service" ]]; then
+                    systemctl start "$svc" 2>/dev/null
+                fi
+            done
+            sleep 2
+            print_success "All installed protocols started"
+            ;;
+        0) return 0 ;;
+        *) print_error "Invalid choice" ;;
+    esac
+
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+
+###############################################################################
+# WEB UI DASHBOARD (Embedded - Single File, Custom Port)
+# - Auto-installs Python3 if needed
+# - Runs a lightweight HTTP server on user-specified port
+# - Full dashboard: status, credentials, QR codes, controls
+# - No additional files needed - everything is generated inline
+###############################################################################
+
+install_webui() {
+    clear
+    echo -e "${MAGENTA}╔════════════════════════════════════════════════════╗${NC}"
+    echo -e "${MAGENTA}║   Web UI Dashboard Installation (v4.0)             ║${NC}"
+    echo -e "${MAGENTA}╚════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    # Check if already running
+    if systemctl is-active --quiet vpn-webui; then
+        local current_port=$(cat "$WEBUI_PORT_FILE" 2>/dev/null)
+        print_warning "Web UI is already running on port $current_port"
+        read -p "Do you want to reinstall/change port? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+        systemctl stop vpn-webui
+    fi
+
+    # Ask for custom port
+    echo ""
+    print_prompt "Enter port number for Web UI (e.g., 8181, 8080, 9090):"
+    read -r WEBUI_PORT
+
+    # Validate port
+    if [[ -z "$WEBUI_PORT" ]]; then
+        WEBUI_PORT=8181
+        print_info "Using default port: 8181"
+    fi
+
+    if ! [[ "$WEBUI_PORT" =~ ^[0-9]+$ ]] || [[ "$WEBUI_PORT" -lt 1024 ]] || [[ "$WEBUI_PORT" -gt 65535 ]]; then
+        print_error "Invalid port. Must be between 1024-65535"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    # Check if port is already in use by something else
+    if ss -tlnp | grep -q ":$WEBUI_PORT " && ! ss -tlnp | grep ":$WEBUI_PORT " | grep -q "vpn-webui"; then
+        print_error "Port $WEBUI_PORT is already in use by another service"
+        ss -tlnp | grep ":$WEBUI_PORT "
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    print_info "Installing Web UI on port $WEBUI_PORT..."
+
+    # Ensure Python3 is available
+    if ! command -v python3 &> /dev/null; then
+        print_info "Installing Python3..."
+        install_packages python3
+    fi
+
+    # Create directories
+    mkdir -p "$WEBUI_DIR"
+    mkdir -p "$CONFIG_DIR"
+
+    # Save port
+    echo "$WEBUI_PORT" > "$WEBUI_PORT_FILE"
+
+    # Generate a random auth token for basic security
+    local AUTH_TOKEN=$(generate_random_password)
+    echo "$AUTH_TOKEN" > "$CONFIG_DIR/webui_token"
+    chmod 600 "$CONFIG_DIR/webui_token"
+
+    # Create the Python web server
+    cat > "$WEBUI_DIR/server.py" << 'PYEOF'
+#!/usr/bin/env python3
+"""VPN Gaming Dashboard - Embedded Web UI Server v4.0"""
+
+import http.server
+import json
+import os
+import subprocess
+import html
+import urllib.parse
+import sys
+import socket
+
+PORT = int(open('/opt/vpn-gaming/webui_port').read().strip())
+AUTH_TOKEN = open('/etc/vpn-gaming/webui_token').read().strip()
+CLIENT_DIR = os.path.expanduser('~') + '/vpn-clients'
+if not os.path.isdir(CLIENT_DIR):
+    CLIENT_DIR = '/root/vpn-clients'
+
+def run_cmd(cmd):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
+        return r.stdout.strip()
+    except:
+        return ''
+
+def svc_status(name):
+    return run_cmd(f'systemctl is-active {name} 2>/dev/null') == 'active'
+
+def read_file(path):
+    try:
+        with open(path, 'r') as f:
+            return f.read()
+    except:
+        return ''
+
+def get_credentials():
+    creds = {}
+    for name in ['trojan', 'xray', 'vless-ws']:
+        fpath = os.path.join(CLIENT_DIR, f'{name}-credentials.txt')
+        if os.path.isfile(fpath):
+            creds[name] = read_file(fpath)
+    return creds
+
+def get_system_info():
+    info = {}
+    info['ipv4'] = run_cmd("curl -4 -s --connect-timeout 3 ifconfig.me 2>/dev/null") or run_cmd("ip -4 addr show | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}' | grep -v 127.0.0.1 | head -1")
+    info['ipv6'] = run_cmd("curl -6 -s --connect-timeout 3 ifconfig.me 2>/dev/null") or ''
+    info['uptime'] = run_cmd('uptime -p')
+    info['load'] = run_cmd("cat /proc/loadavg | awk '{print $1, $2, $3}'")
+    info['mem'] = run_cmd("free -h | awk '/^Mem:/{print $3\"/\"$2}'")
+    info['cpu'] = run_cmd("nproc") + ' cores'
+    info['os'] = run_cmd("cat /etc/os-release | grep PRETTY_NAME | cut -d'\"' -f2")
+    info['bbr'] = 'bbr' in run_cmd('sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null')
+    info['tfo'] = run_cmd('sysctl -n net.ipv4.tcp_fastopen 2>/dev/null') == '3'
+    return info
+
+def extract_uris(text):
+    uris = []
+    for line in text.split('\n'):
+        line = line.strip()
+        if line.startswith(('trojan://', 'vless://')):
+            uris.append(line)
+    return uris
+
+def build_page(auth_ok=True):
+    if not auth_ok:
+        return '''<!DOCTYPE html><html><head><title>VPN Dashboard - Login</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#fff}
+.login-box{background:rgba(255,255,255,0.05);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:40px;width:380px;text-align:center}
+h1{font-size:24px;margin-bottom:8px}p{color:rgba(255,255,255,0.6);margin-bottom:24px;font-size:14px}
+input{width:100%;padding:14px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);border-radius:10px;color:#fff;font-size:16px;margin-bottom:16px;outline:none}
+input:focus{border-color:#7c3aed}
+button{width:100%;padding:14px;background:linear-gradient(135deg,#7c3aed,#2563eb);border:none;border-radius:10px;color:#fff;font-size:16px;cursor:pointer;font-weight:600}
+button:hover{opacity:0.9}.err{color:#ef4444;font-size:13px;margin-bottom:12px}
+</style></head><body><div class="login-box"><h1>VPN Dashboard</h1><p>Enter your authentication token</p>
+<form method="POST" action="/login"><input type="password" name="token" placeholder="Auth Token" autofocus>
+<button type="submit">Login</button></form></div></body></html>'''
+
+    services = {}
+    for svc in ['trojan', 'xray', 'vless-ws']:
+        services[svc] = svc_status(svc)
+
+    creds = get_credentials()
+    sysinfo = get_system_info()
+
+    # Build service cards
+    svc_cards = ''
+    for svc, active in services.items():
+        status_class = 'active' if active else 'inactive'
+        status_text = 'Running' if active else 'Stopped'
+        status_dot = '#10b981' if active else '#ef4444'
+        label = {'trojan': 'Trojan-GFW', 'xray': 'Xray Reality', 'vless-ws': 'VLESS-WS+TLS CDN'}[svc]
+
+        cred_html = ''
+        if svc in creds:
+            uris = extract_uris(creds[svc])
+            cred_text = html.escape(creds[svc])
+            cred_html = f'<pre class="cred-box">{cred_text}</pre>'
+            for i, uri in enumerate(uris):
+                safe_uri = html.escape(uri)
+                cred_html += f'''<div class="uri-box">
+                    <code class="uri-text" id="uri-{svc}-{i}">{safe_uri}</code>
+                    <button class="copy-btn" onclick="copyText('uri-{svc}-{i}')">Copy</button>
+                </div>
+                <div class="qr-container"><img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={urllib.parse.quote(uri)}" alt="QR" class="qr-img"></div>'''
+
+        svc_cards += f'''<div class="card">
+            <div class="card-header">
+                <div class="svc-info"><span class="dot" style="background:{status_dot}"></span><h3>{label}</h3></div>
+                <span class="badge {status_class}">{status_text}</span>
+            </div>
+            <div class="card-actions">
+                <form method="POST" action="/action" style="display:inline">
+                    <input type="hidden" name="token" value="{html.escape(AUTH_TOKEN)}">
+                    <input type="hidden" name="service" value="{svc}">
+                    <button type="submit" name="action" value="restart" class="btn btn-blue">Restart</button>
+                    <button type="submit" name="action" value="stop" class="btn btn-red">Stop</button>
+                    <button type="submit" name="action" value="start" class="btn btn-green">Start</button>
+                </form>
+            </div>
+            {cred_html}
+        </div>'''
+
+    return f'''<!DOCTYPE html><html><head><title>VPN Gaming Dashboard v4.0</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="30">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);min-height:100vh;color:#e2e8f0;padding:20px}}
+.container{{max-width:1200px;margin:0 auto}}
+.header{{text-align:center;padding:30px 0;margin-bottom:30px}}
+.header h1{{font-size:28px;background:linear-gradient(135deg,#7c3aed,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}}
+.header p{{color:rgba(255,255,255,0.5);font-size:14px}}
+.sys-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:30px}}
+.sys-card{{background:rgba(255,255,255,0.05);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:16px;text-align:center}}
+.sys-card .label{{font-size:11px;text-transform:uppercase;color:rgba(255,255,255,0.4);letter-spacing:1px;margin-bottom:4px}}
+.sys-card .value{{font-size:18px;font-weight:700;color:#7c3aed}}
+.sys-card .value.green{{color:#10b981}}
+.card{{background:rgba(255,255,255,0.05);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:24px;margin-bottom:20px}}
+.card-header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px}}
+.svc-info{{display:flex;align-items:center;gap:10px}}
+.svc-info h3{{font-size:18px}}
+.dot{{width:10px;height:10px;border-radius:50%;display:inline-block}}
+.badge{{padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600}}
+.badge.active{{background:rgba(16,185,129,0.2);color:#10b981}}
+.badge.inactive{{background:rgba(239,68,68,0.2);color:#ef4444}}
+.card-actions{{margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap}}
+.btn{{padding:8px 16px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;color:#fff;transition:opacity 0.2s}}
+.btn:hover{{opacity:0.85}}
+.btn-blue{{background:linear-gradient(135deg,#3b82f6,#2563eb)}}
+.btn-red{{background:linear-gradient(135deg,#ef4444,#dc2626)}}
+.btn-green{{background:linear-gradient(135deg,#10b981,#059669)}}
+.cred-box{{background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:16px;font-size:12px;line-height:1.6;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:#94a3b8;margin-bottom:12px;max-height:300px;overflow-y:auto}}
+.uri-box{{display:flex;align-items:center;gap:8px;background:rgba(124,58,237,0.1);border:1px solid rgba(124,58,237,0.3);border-radius:8px;padding:10px;margin-bottom:8px;flex-wrap:wrap}}
+.uri-text{{font-size:11px;word-break:break-all;flex:1;color:#c4b5fd}}
+.copy-btn{{padding:6px 14px;background:#7c3aed;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap}}
+.copy-btn:hover{{background:#6d28d9}}
+.qr-container{{text-align:center;margin:12px 0}}
+.qr-img{{border-radius:8px;background:#fff;padding:8px;max-width:200px}}
+.footer{{text-align:center;padding:20px;color:rgba(255,255,255,0.3);font-size:12px}}
+.opt-badge{{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:4px}}
+.opt-on{{background:rgba(16,185,129,0.2);color:#10b981}}
+.opt-off{{background:rgba(239,68,68,0.2);color:#ef4444}}
+@media(max-width:600px){{.sys-grid{{grid-template-columns:repeat(2,1fr)}}.card-header{{flex-direction:column;align-items:flex-start}}}}
+</style>
+<script>
+function copyText(id){{
+    var el=document.getElementById(id);
+    var text=el.innerText||el.textContent;
+    navigator.clipboard.writeText(text).then(function(){{
+        var btns=el.parentNode.querySelectorAll('.copy-btn');
+        if(btns.length){{btns[0].textContent='Copied!';setTimeout(function(){{btns[0].textContent='Copy'}},2000)}}
+    }});
+}}
+</script>
+</head><body>
+<div class="container">
+    <div class="header">
+        <h1>VPN Gaming Dashboard v4.0</h1>
+        <p>Universal IPv4/IPv6 Dual-Stack Management</p>
+    </div>
+    <div class="sys-grid">
+        <div class="sys-card"><div class="label">IPv4</div><div class="value">{html.escape(sysinfo.get('ipv4','N/A'))}</div></div>
+        <div class="sys-card"><div class="label">IPv6</div><div class="value" style="font-size:11px">{html.escape(sysinfo.get('ipv6','') or 'N/A')}</div></div>
+        <div class="sys-card"><div class="label">OS</div><div class="value" style="font-size:12px">{html.escape(sysinfo.get('os',''))}</div></div>
+        <div class="sys-card"><div class="label">Memory</div><div class="value">{html.escape(sysinfo.get('mem',''))}</div></div>
+        <div class="sys-card"><div class="label">Load</div><div class="value">{html.escape(sysinfo.get('load',''))}</div></div>
+        <div class="sys-card"><div class="label">BBR</div><div class="value {'green' if sysinfo.get('bbr') else ''}"">{'ON' if sysinfo.get('bbr') else 'OFF'}</div></div>
+        <div class="sys-card"><div class="label">TFO</div><div class="value {'green' if sysinfo.get('tfo') else ''}"">{'ON' if sysinfo.get('tfo') else 'OFF'}</div></div>
+        <div class="sys-card"><div class="label">Uptime</div><div class="value" style="font-size:12px">{html.escape(sysinfo.get('uptime',''))}</div></div>
+    </div>
+    {svc_cards}
+    <div class="footer">VPN Gaming Autoscript v4.0 - Auto-refreshes every 30s | <a href="/logout" style="color:#7c3aed">Logout</a></div>
+</div></body></html>'''
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # Suppress logs
+
+    def check_auth(self):
+        cookies = self.headers.get('Cookie', '')
+        for c in cookies.split(';'):
+            c = c.strip()
+            if c.startswith('auth='):
+                return c[5:] == AUTH_TOKEN
+        return False
+
+    def do_GET(self):
+        if self.path == '/logout':
+            self.send_response(302)
+            self.send_header('Set-Cookie', 'auth=; Path=/; Max-Age=0')
+            self.send_header('Location', '/')
+            self.end_headers()
+            return
+
+        if self.path == '/favicon.ico':
+            self.send_response(204)
+            self.end_headers()
+            return
+
+        auth_ok = self.check_auth()
+        page = build_page(auth_ok)
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(page.encode())
+
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode()
+        params = urllib.parse.parse_qs(body)
+
+        if self.path == '/login':
+            token = params.get('token', [''])[0]
+            if token == AUTH_TOKEN:
+                self.send_response(302)
+                self.send_header('Set-Cookie', f'auth={AUTH_TOKEN}; Path=/; HttpOnly; Max-Age=86400')
+                self.send_header('Location', '/')
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.end_headers()
+                self.wfile.write(build_page(False).replace('</form>', '<p class="err">Invalid token</p></form>').encode())
+            return
+
+        if self.path == '/action':
+            token = params.get('token', [''])[0]
+            if token != AUTH_TOKEN and not self.check_auth():
+                self.send_response(302)
+                self.send_header('Location', '/')
+                self.end_headers()
+                return
+
+            service = params.get('service', [''])[0]
+            action = params.get('action', [''])[0]
+
+            if service in ['trojan', 'xray', 'vless-ws'] and action in ['start', 'stop', 'restart']:
+                subprocess.run(f'systemctl {action} {service}', shell=True, timeout=15)
+
+            self.send_response(302)
+            self.send_header('Location', '/')
+            self.end_headers()
+            return
+
+        self.send_response(302)
+        self.send_header('Location', '/')
+        self.end_headers()
+
+if __name__ == '__main__':
+    server = http.server.HTTPServer(('0.0.0.0', PORT), Handler)
+    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    print(f'VPN Dashboard running on port {PORT}')
+    server.serve_forever()
+PYEOF
+
+    chmod +x "$WEBUI_DIR/server.py"
+
+    # Create systemd service
+    cat > /etc/systemd/system/vpn-webui.service << EOF
+[Unit]
+Description=VPN Gaming Dashboard Web UI (Port $WEBUI_PORT)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 $WEBUI_DIR/server.py
+Restart=always
+RestartSec=5s
+LimitNOFILE=65536
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=$WEBUI_DIR
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Open firewall port
+    iptables -C INPUT -p tcp --dport "$WEBUI_PORT" -j ACCEPT 2>/dev/null || \
+        iptables -A INPUT -p tcp --dport "$WEBUI_PORT" -j ACCEPT
+    ip6tables -C INPUT -p tcp --dport "$WEBUI_PORT" -j ACCEPT 2>/dev/null || \
+        ip6tables -A INPUT -p tcp --dport "$WEBUI_PORT" -j ACCEPT
+
+    # Save firewall rules
+    if command -v netfilter-persistent &> /dev/null; then
+        netfilter-persistent save 2>/dev/null
+    fi
+
+    # Start service
+    systemctl daemon-reload
+    systemctl enable vpn-webui > /dev/null 2>&1
+    systemctl restart vpn-webui
+
+    sleep 2
+
+    if systemctl is-active --quiet vpn-webui; then
+        print_success "Web UI started successfully!"
+    else
+        print_error "Web UI failed to start"
+        journalctl -u vpn-webui -n 10 --no-pager
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local SERVER_IP=$(get_main_ip)
+    local SERVER_IPV6=$(get_main_ipv6)
+
+    clear
+    echo -e "${MAGENTA}╔════════════════════════════════════════════════════╗${NC}"
+    echo -e "${MAGENTA}║   Web UI Dashboard Installed Successfully!         ║${NC}"
+    echo -e "${MAGENTA}╚════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Access URL (IPv4):${NC} http://$SERVER_IP:$WEBUI_PORT"
+    if [[ -n "$SERVER_IPV6" ]]; then
+        echo -e "${CYAN}Access URL (IPv6):${NC} http://[$SERVER_IPV6]:$WEBUI_PORT"
+    fi
+    echo ""
+    echo -e "${YELLOW}Authentication Token:${NC}"
+    echo -e "  ${WHITE}$AUTH_TOKEN${NC}"
+    echo ""
+    echo -e "${RED}IMPORTANT: Save this token! You need it to login.${NC}"
+    echo ""
+
+    # Save access info
+    cat > "$CLIENT_DIR/webui-access.txt" << EOF
+VPN Gaming Dashboard - Web UI Access Information
+==================================================
+URL (IPv4): http://$SERVER_IP:$WEBUI_PORT
+URL (IPv6): http://[$SERVER_IPV6]:$WEBUI_PORT
+Auth Token: $AUTH_TOKEN
+
+IMPORTANT: Keep this token secure!
+EOF
+
+    print_info "Access info saved to: $CLIENT_DIR/webui-access.txt"
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# Main Menu (Enhanced v4.0 - Universal Dual-Stack + VLESS-WS + WebUI)
+###############################################################################
+
+show_menu() {
+    clear
+    echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   VPN Gaming Autoscript v$SCRIPT_VERSION (Universal IPv4/IPv6)         ║${NC}"
+    echo -e "${GREEN}║   Trojan | Xray Reality | VLESS-WS CDN | Web Dashboard  ║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e " ${CYAN} 1.${NC} Install Trojan-GFW (Universal Dual-Stack)"
+    echo -e " ${CYAN} 2.${NC} Install Xray (VLESS + XTLS-Reality)"
+    echo -e " ${MAGENTA} 3.${NC} Install VLESS-WS+TLS (CDN Fronting) ${YELLOW}[NEW]${NC}"
+    echo -e " ${CYAN} 4.${NC} Add Trojan on Additional IP"
+    echo -e " ${CYAN} 5.${NC} Add Xray on Additional IP"
+    echo -e " ${CYAN} 6.${NC} Switch / Manage Protocols"
+    echo -e " ${CYAN} 7.${NC} View Connection Info & QR Codes"
+    echo -e " ${CYAN} 8.${NC} Optimize for Gaming (BBR + Speed Tweaks)"
+    echo -e " ${CYAN} 9.${NC} Speed & Latency Test (IPv4 vs IPv6)"
+    echo -e " ${CYAN}10.${NC} IPv6 Diagnostics & Status"
+    echo -e " ${CYAN}11.${NC} Repair Dual-Stack (Fix IPv6 Issues)"
+    echo -e " ${MAGENTA}12.${NC} Install Web UI Dashboard ${YELLOW}[NEW]${NC}"
+    echo -e " ${RED}13.${NC} Uninstall Everything"
+    echo -e " ${CYAN} 0.${NC} Exit"
+    echo ""
+
+    # Show service status
+    for svc in trojan xray vless-ws; do
+        if systemctl is-active --quiet "$svc" 2>/dev/null; then
+            local label
+            case "$svc" in
+                trojan) label="Trojan-GFW" ;;
+                xray) label="Xray Reality" ;;
+                vless-ws) label="VLESS-WS+TLS CDN" ;;
+            esac
+            local bind=$(ss -tlnp 2>/dev/null | grep -E "$svc|xray" | awk '{print $4}' | head -1)
+            local stack=""
+            if echo "$bind" | grep -qE '^\*:|^\[::\]:'; then
+                stack="(IPv4+IPv6)"
+            elif echo "$bind" | grep -q '0.0.0.0:'; then
+                stack="(IPv4)"
+            fi
+            echo -e " ${GREEN}[✓]${NC} $label: Running $stack"
+        fi
+    done
+
+    # Show WebUI status
+    if systemctl is-active --quiet vpn-webui 2>/dev/null; then
+        local wport=$(cat "$WEBUI_PORT_FILE" 2>/dev/null)
+        echo -e " ${GREEN}[✓]${NC} Web UI: Running on port $wport"
+    fi
+
+    # Count additional instances
+    local extra_count=0
+    for service in /etc/systemd/system/trojan-*.service /etc/systemd/system/xray-*.service; do
+        if [[ -f "$service" ]] && systemctl is-active --quiet "$(basename "$service" .service)" 2>/dev/null; then
+            ((extra_count++))
+        fi
+    done
+    if [[ $extra_count -gt 0 ]]; then
+        echo -e " ${GREEN}[✓]${NC} Additional IP instances: $extra_count"
+    fi
+
+    # Show IP stack
+    local pub4=$(get_main_ip)
+    local pub6=$(get_main_ipv6)
+    echo ""
+    echo -e " ${BLUE}Server IPv4:${NC} $pub4"
+    if [[ -n "$pub6" ]]; then
+        echo -e " ${BLUE}Server IPv6:${NC} $pub6"
+    else
+        echo -e " ${BLUE}Server IPv6:${NC} ${YELLOW}Not available${NC}"
+    fi
+
+    echo ""
+}
+
+main() {
+    # Initial setup
+    mkdir -p "$INSTALL_DIR"
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$CLIENT_DIR"
+    touch "$LOG_FILE"
+
+    # Check requirements
+    check_root
+    check_os
+    check_internet
+
+    # Install base dependencies on first run (universal, fixes Debian 13 stuck issue)
+    if [[ ! -f "$CONFIG_DIR/.deps_installed" ]]; then
+        install_base_dependencies
+        touch "$CONFIG_DIR/.deps_installed"
+    fi
+
+    # Main loop
+    while true; do
+        show_menu
+        print_prompt "Enter your choice (0-13):"
+        read -r CHOICE
+
+        case $CHOICE in
+            1) install_trojan ;;
+            2) install_xray ;;
+            3) install_vless_ws ;;
+            4) add_trojan_on_ip ;;
+            5) add_xray_on_ip ;;
+            6) switch_protocol ;;
+            7) view_connection_info ;;
+            8) optimize_for_gaming ;;
+            9) speed_test ;;
+            10) ipv6_diagnostics ;;
+            11) repair_dual_stack ;;
+            12) install_webui ;;
+            13) uninstall_vpn ;;
+            0)
+                clear
+                print_success "Thank you for using VPN Gaming Autoscript v$SCRIPT_VERSION!"
+                if systemctl is-active --quiet vpn-webui 2>/dev/null; then
+                    local wport=$(cat "$WEBUI_PORT_FILE" 2>/dev/null)
+                    print_info "Web UI still running at http://$(get_main_ip):$wport"
+                fi
+                exit 0
+                ;;
+            *)
+                print_error "Invalid choice. Please try again."
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# Run main function
+main
