@@ -688,7 +688,7 @@ stop_conflicting_vpn_services() {
     print_info "Stopping active VPN services that conflict on TCP/443..."
     local stopped_any=false
 
-    for svc in trojan xray trojan-go xray-ws xray-httpupgrade xray-grpc-reality; do
+    for svc in trojan xray trojan-go xray-ws xray-httpupgrade xray-grpc-reality ssh-ws; do
         if systemctl is-active --quiet "$svc" 2>/dev/null; then
             systemctl stop "$svc"
             print_warning "Stopped $svc to free TCP/443"
@@ -2092,6 +2092,210 @@ EOF
     if [[ -n "$SERVER_IPV6" ]]; then
         print_info "IPv6 client config: $CLIENT_DIR/xray-grpc-reality-client-ipv6.json"
     fi
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+###############################################################################
+# SSH over WebSocket Installation
+###############################################################################
+
+install_ssh_ws() {
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   SSH over WebSocket Install (Advanced)       ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    detect_ip_stack
+    setup_dual_stack_kernel
+    setup_ipv6_firewall
+    stop_conflicting_vpn_services
+
+    print_info "Installing dependencies for SSH over WebSocket..."
+    apt update > /dev/null 2>&1
+    apt install -y python3 python3-pip curl jq qrencode xz-utils ethtool iptables-persistent openssl > /dev/null 2>&1
+    print_success "Dependencies installed"
+
+    print_prompt "Enter WebSocket port [default: 2082]:"
+    read -r SSH_WS_PORT
+    SSH_WS_PORT="${SSH_WS_PORT:-2082}"
+
+    if ! [[ "$SSH_WS_PORT" =~ ^[0-9]+$ ]] || (( SSH_WS_PORT < 1 || SSH_WS_PORT > 65535 )); then
+        print_error "Invalid WebSocket port: $SSH_WS_PORT"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local default_ws_path="/ssh-ws-$(generate_short_id 10)"
+    print_prompt "Enter WebSocket path [default: $default_ws_path]:"
+    read -r SSH_WS_PATH
+    SSH_WS_PATH=$(ensure_leading_slash "${SSH_WS_PATH:-$default_ws_path}")
+
+    print_info "Installing websocket proxy runtime..."
+    sudo pip3 install websockets > /dev/null 2>&1
+
+    mkdir -p /usr/local/etc/ssh-ws
+
+    cat > /usr/local/etc/ssh-ws/server.py << EOF
+#!/usr/bin/env python3
+import asyncio
+import signal
+from urllib.parse import urlparse
+
+from websockets.asyncio.server import serve
+
+WS_HOST = "::"
+WS_PORT = int(${SSH_WS_PORT})
+WS_PATH = "${SSH_WS_PATH}"
+SSH_HOST = "127.0.0.1"
+SSH_PORT = 22
+
+async def bridge(websocket):
+    parsed = urlparse(websocket.request.path)
+    if parsed.path != WS_PATH:
+        await websocket.close(code=1008, reason="Invalid WebSocket path")
+        return
+
+    reader, writer = await asyncio.open_connection(SSH_HOST, SSH_PORT)
+
+    async def ws_to_tcp():
+        try:
+            async for message in websocket:
+                if isinstance(message, str):
+                    message = message.encode()
+                writer.write(message)
+                await writer.drain()
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    async def tcp_to_ws():
+        try:
+            while True:
+                data = await reader.read(32768)
+                if not data:
+                    break
+                await websocket.send(data)
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+    await asyncio.gather(ws_to_tcp(), tcp_to_ws())
+
+async def main():
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop_event.set)
+
+    async with serve(bridge, WS_HOST, WS_PORT):
+        await stop_event.wait()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+EOF
+
+    chmod +x /usr/local/etc/ssh-ws/server.py
+
+    cat > /etc/systemd/system/ssh-ws.service << EOF
+[Unit]
+Description=SSH over WebSocket Proxy
+After=network-online.target ssh.service sshd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/etc/ssh-ws/server.py
+Restart=always
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    if command -v iptables &> /dev/null; then
+        iptables -C INPUT -p tcp --dport "$SSH_WS_PORT" -j ACCEPT 2>/dev/null || \
+            iptables -A INPUT -p tcp --dport "$SSH_WS_PORT" -j ACCEPT
+    fi
+    if command -v ip6tables &> /dev/null; then
+        ip6tables -C INPUT -p tcp --dport "$SSH_WS_PORT" -j ACCEPT 2>/dev/null || \
+            ip6tables -A INPUT -p tcp --dport "$SSH_WS_PORT" -j ACCEPT
+    fi
+    if command -v netfilter-persistent &> /dev/null; then
+        netfilter-persistent save > /dev/null 2>&1
+    elif command -v iptables-save &> /dev/null; then
+        mkdir -p /etc/iptables
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null
+        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+    fi
+
+    systemctl daemon-reload
+    systemctl enable ssh-ws > /dev/null 2>&1
+    systemctl restart ssh-ws
+    sleep 2
+
+    if ! systemctl is-active --quiet ssh-ws; then
+        print_error "Failed to start SSH over WebSocket service"
+        journalctl -u ssh-ws -n 20 --no-pager
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    mkdir -p "$CLIENT_DIR"
+
+    local SERVER_IPV4=$(get_main_ip)
+    local SERVER_IPV6=$(get_main_ipv6)
+    local IPV4_URL_HOST=$(format_ip_for_url "$SERVER_IPV4")
+    local IPV6_URL_HOST=$(format_ip_for_url "$SERVER_IPV6")
+
+    cat > "$CLIENT_DIR/ssh-ws-credentials.txt" << EOF
+SSH over WebSocket Server Information
+=====================================
+Server (IPv4): $SERVER_IPV4
+Server (IPv6): ${SERVER_IPV6:-N/A}
+SSH Port: 22
+WebSocket Port: $SSH_WS_PORT
+WebSocket Path: $SSH_WS_PATH
+Username: root
+
+Usage Notes:
+- Use your server root password or SSH key for authentication.
+- Configure your SSH client or tunneling app to connect via WebSocket first, then forward to SSH port 22.
+- Example endpoint (IPv4): ws://${IPV4_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH
+EOF
+
+    if [[ -n "$SERVER_IPV6" ]]; then
+        cat >> "$CLIENT_DIR/ssh-ws-credentials.txt" << EOF
+- Example endpoint (IPv6): ws://${IPV6_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH
+EOF
+    fi
+
+    clear
+    echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   SSH over WebSocket Installation Complete!   ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Server (IPv4):${NC} $SERVER_IPV4"
+    if [[ -n "$SERVER_IPV6" ]]; then
+        echo -e "${CYAN}Server (IPv6):${NC} $SERVER_IPV6"
+    fi
+    echo -e "${CYAN}SSH Port:${NC} 22"
+    echo -e "${CYAN}WebSocket Port:${NC} $SSH_WS_PORT"
+    echo -e "${CYAN}WebSocket Path:${NC} $SSH_WS_PATH"
+    echo -e "${CYAN}Username:${NC} root"
+    echo ""
+    echo -e "${YELLOW}Example IPv4 Endpoint:${NC} ws://${IPV4_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH"
+    if [[ -n "$SERVER_IPV6" ]]; then
+        echo -e "${YELLOW}Example IPv6 Endpoint:${NC} ws://${IPV6_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH"
+    fi
+    echo ""
+    print_info "Credentials saved to: $CLIENT_DIR/ssh-ws-credentials.txt"
     echo ""
     read -p "Press Enter to continue..."
 }
@@ -3623,7 +3827,17 @@ view_connection_info() {
         echo ""
     fi
 
-    if ! systemctl is-active --quiet trojan && ! systemctl is-active --quiet xray && ! systemctl is-active --quiet trojan-go && ! systemctl is-active --quiet xray-ws && ! systemctl is-active --quiet xray-httpupgrade && ! systemctl is-active --quiet xray-grpc-reality && [[ ! -f /etc/systemd/system/trojan-*.service ]] && [[ ! -f /etc/systemd/system/xray-*.service ]]; then
+    # Show SSH over WebSocket
+    if systemctl is-active --quiet ssh-ws; then
+        echo -e "${CYAN}=== SSH + WS (Main) ===${NC}"
+        if [[ -f "$CLIENT_DIR/ssh-ws-credentials.txt" ]]; then
+            cat "$CLIENT_DIR/ssh-ws-credentials.txt"
+            echo ""
+        fi
+        echo ""
+    fi
+
+    if ! systemctl is-active --quiet trojan && ! systemctl is-active --quiet xray && ! systemctl is-active --quiet trojan-go && ! systemctl is-active --quiet xray-ws && ! systemctl is-active --quiet xray-httpupgrade && ! systemctl is-active --quiet xray-grpc-reality && ! systemctl is-active --quiet ssh-ws && [[ ! -f /etc/systemd/system/trojan-*.service ]] && [[ ! -f /etc/systemd/system/xray-*.service ]]; then
         print_warning "No VPN services are currently running"
     fi
 
@@ -4236,6 +4450,16 @@ uninstall_vpn() {
         print_success "Xray REALITY + gRPC service removed"
     fi
 
+    # Remove SSH over WebSocket service/config
+    if [[ -f /etc/systemd/system/ssh-ws.service ]]; then
+        print_info "Removing SSH over WebSocket service..."
+        systemctl stop ssh-ws > /dev/null 2>&1
+        systemctl disable ssh-ws > /dev/null 2>&1
+        rm -f /etc/systemd/system/ssh-ws.service
+        rm -rf /usr/local/etc/ssh-ws
+        print_success "SSH over WebSocket service removed"
+    fi
+
     # Remove client configs
     if [[ -d "$CLIENT_DIR" ]]; then
         print_info "Removing client configurations..."
@@ -4483,15 +4707,16 @@ show_menu() {
     echo -e " ${CYAN} 4.${NC} Install Xray (VLESS + WS + TLS)"
     echo -e " ${CYAN} 5.${NC} Install Xray (VLESS + HTTPUpgrade + TLS)"
     echo -e " ${CYAN} 6.${NC} Install Xray (VLESS + REALITY + gRPC)"
-    echo -e " ${CYAN} 7.${NC} Add Trojan on Additional IP (IPv4/IPv6)"
-    echo -e " ${CYAN} 8.${NC} Add Xray on Additional IP (IPv4/IPv6)"
-    echo -e " ${CYAN} 9.${NC} Switch Protocol (Trojan <-> Xray)"
-    echo -e " ${CYAN}10.${NC} View Connection Info"
-    echo -e " ${CYAN}11.${NC} Optimize for Gaming (BBR + Dual-Stack Tweaks)"
-    echo -e " ${CYAN}12.${NC} Speed & Latency Test (IPv4 vs IPv6)"
-    echo -e " ${CYAN}13.${NC} IPv6 Diagnostics & Status"
-    echo -e " ${CYAN}14.${NC} Repair Dual-Stack (Fix IPv6 Issues)"
-    echo -e " ${CYAN}15.${NC} Uninstall"
+    echo -e " ${CYAN} 7.${NC} Install SSH + WS"
+    echo -e " ${CYAN} 8.${NC} Add Trojan on Additional IP (IPv4/IPv6)"
+    echo -e " ${CYAN} 9.${NC} Add Xray on Additional IP (IPv4/IPv6)"
+    echo -e " ${CYAN}10.${NC} Switch Protocol (Trojan <-> Xray)"
+    echo -e " ${CYAN}11.${NC} View Connection Info"
+    echo -e " ${CYAN}12.${NC} Optimize for Gaming (BBR + Dual-Stack Tweaks)"
+    echo -e " ${CYAN}13.${NC} Speed & Latency Test (IPv4 vs IPv6)"
+    echo -e " ${CYAN}14.${NC} IPv6 Diagnostics & Status"
+    echo -e " ${CYAN}15.${NC} Repair Dual-Stack (Fix IPv6 Issues)"
+    echo -e " ${CYAN}16.${NC} Uninstall"
     echo -e " ${CYAN} 0.${NC} Exit"
     echo ""
 
@@ -4554,6 +4779,17 @@ show_menu() {
             echo -e "${GREEN}[✓]${NC} Xray REALITY + gRPC: Running"
         fi
     fi
+    if systemctl is-active --quiet ssh-ws; then
+        local ssh_ws_bind=$(ss -tlnp | grep '/usr/local/etc/ssh-ws/server.py' | awk '{print $4}' | head -1)
+        if [[ -z "$ssh_ws_bind" ]]; then
+            ssh_ws_bind=$(ss -tlnp | grep 'python3' | awk '{print $4}' | head -1)
+        fi
+        if echo "$ssh_ws_bind" | grep -q '^\*:' || echo "$ssh_ws_bind" | grep -q '^\[::\]:'; then
+            echo -e "${GREEN}[✓]${NC} SSH + WS: Running (IPv4+IPv6)"
+        else
+            echo -e "${GREEN}[✓]${NC} SSH + WS: Running"
+        fi
+    fi
 
     # Count additional instances
     TROJAN_COUNT=0
@@ -4613,7 +4849,7 @@ main() {
     # Main loop
     while true; do
         show_menu
-        print_prompt "Enter your choice (0-15):"
+        print_prompt "Enter your choice (0-16):"
         read -r CHOICE
 
         case $CHOICE in
@@ -4623,15 +4859,16 @@ main() {
             4) install_xray_vless_ws_tls ;;
             5) install_xray_httpupgrade_tls ;;
             6) install_xray_reality_grpc ;;
-            7) add_trojan_on_ip ;;
-            8) add_xray_on_ip ;;
-            9) switch_protocol ;;
-            10) view_connection_info ;;
-            11) optimize_for_gaming ;;
-            12) speed_test ;;
-            13) ipv6_diagnostics ;;
-            14) repair_dual_stack ;;
-            15) uninstall_vpn ;;
+            7) install_ssh_ws ;;
+            8) add_trojan_on_ip ;;
+            9) add_xray_on_ip ;;
+            10) switch_protocol ;;
+            11) view_connection_info ;;
+            12) optimize_for_gaming ;;
+            13) speed_test ;;
+            14) ipv6_diagnostics ;;
+            15) repair_dual_stack ;;
+            16) uninstall_vpn ;;
             0)
                 clear
                 print_success "Thank you for using VPN Gaming Autoscript v$SCRIPT_VERSION (Universal)!"
