@@ -685,13 +685,13 @@ ensure_leading_slash() {
 }
 
 stop_conflicting_vpn_services() {
-    print_info "Stopping active VPN services that conflict on TCP/443..."
+    print_info "Stopping active VPN services that may conflict on shared listener ports..."
     local stopped_any=false
 
-    for svc in trojan xray trojan-go xray-ws xray-httpupgrade xray-grpc-reality ssh-ws; do
+    for svc in trojan xray trojan-go xray-ws xray-httpupgrade xray-grpc-reality stunnel4 ssh-ws; do
         if systemctl is-active --quiet "$svc" 2>/dev/null; then
             systemctl stop "$svc"
-            print_warning "Stopped $svc to free TCP/443"
+            print_warning "Stopped $svc to prevent listener port conflicts"
             stopped_any=true
         fi
     done
@@ -701,14 +701,14 @@ stop_conflicting_vpn_services() {
             local svcname=$(basename "$service" .service)
             if systemctl is-active --quiet "$svcname" 2>/dev/null; then
                 systemctl stop "$svcname"
-                print_warning "Stopped $svcname to prevent TCP/443 conflicts"
+                print_warning "Stopped $svcname to prevent listener port conflicts"
                 stopped_any=true
             fi
         fi
     done
 
     if [[ "$stopped_any" == false ]]; then
-        print_success "No conflicting TCP/443 VPN services detected"
+        print_success "No conflicting listener services detected"
     fi
 }
 
@@ -2103,7 +2103,7 @@ EOF
 install_ssh_ws() {
     clear
     echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║   SSH over WebSocket Install (Advanced)       ║${NC}"
+    echo -e "${GREEN}║   SSH + SSL/WS Install (Advanced v3.2)        ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
     echo ""
 
@@ -2112,17 +2112,60 @@ install_ssh_ws() {
     setup_ipv6_firewall
     stop_conflicting_vpn_services
 
-    print_info "Installing dependencies for SSH over WebSocket..."
+    print_info "Installing dependencies for SSH + SSL/WS..."
     apt update > /dev/null 2>&1
-    apt install -y python3 python3-pip curl jq qrencode xz-utils ethtool iptables-persistent openssl > /dev/null 2>&1
+    apt install -y openssh-server stunnel4 python3 python3-pip curl jq qrencode xz-utils ethtool iptables-persistent openssl nginx certbot python3-certbot-nginx > /dev/null 2>&1
     print_success "Dependencies installed"
 
-    print_prompt "Enter WebSocket port [default: 2082]:"
+    print_info "Installing websocket proxy runtime..."
+    if ! python3 -c "import websockets" >/dev/null 2>&1; then
+        sudo pip3 install websockets > /dev/null 2>&1
+    fi
+
+    mkdir -p /usr/local/etc/ssh-ws
+    mkdir -p /usr/local/etc/ssh-ws/certs
+    touch /usr/local/etc/ssh-ws/users.list
+
+    cat > /usr/local/bin/ssh-ws-shell << 'EOF'
+#!/bin/bash
+if [[ -n "$SSH_ORIGINAL_COMMAND" ]]; then
+    echo "This account is restricted to SSH tunneling only."
+    exit 1
+fi
+
+echo "SSH tunneling account connected. Interactive shell access is disabled."
+while true; do
+    sleep 3600
+done
+EOF
+    chmod 755 /usr/local/bin/ssh-ws-shell
+
+    if ! getent group ssh-ws-users > /dev/null 2>&1; then
+        groupadd --system ssh-ws-users
+    fi
+
+    print_prompt "Enter SSL/TLS port for stunnel [default: 443]:"
+    read -r SSH_SSL_PORT
+    SSH_SSL_PORT="${SSH_SSL_PORT:-443}"
+
+    if ! [[ "$SSH_SSL_PORT" =~ ^[0-9]+$ ]] || (( SSH_SSL_PORT < 1 || SSH_SSL_PORT > 65535 )); then
+        print_error "Invalid SSL/TLS port: $SSH_SSL_PORT"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    print_prompt "Enter WebSocket port [default: 8080]:"
     read -r SSH_WS_PORT
-    SSH_WS_PORT="${SSH_WS_PORT:-2082}"
+    SSH_WS_PORT="${SSH_WS_PORT:-8080}"
 
     if ! [[ "$SSH_WS_PORT" =~ ^[0-9]+$ ]] || (( SSH_WS_PORT < 1 || SSH_WS_PORT > 65535 )); then
         print_error "Invalid WebSocket port: $SSH_WS_PORT"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    if [[ "$SSH_WS_PORT" == "$SSH_SSL_PORT" ]]; then
+        print_error "SSL/TLS port and WebSocket port cannot be the same"
         read -p "Press Enter to continue..."
         return 1
     fi
@@ -2132,10 +2175,211 @@ install_ssh_ws() {
     read -r SSH_WS_PATH
     SSH_WS_PATH=$(ensure_leading_slash "${SSH_WS_PATH:-$default_ws_path}")
 
-    print_info "Installing websocket proxy runtime..."
-    sudo pip3 install websockets > /dev/null 2>&1
+    echo -e "${CYAN}Certificate Options:${NC}"
+    echo "  - Enter a domain in the next prompt to request a Let's Encrypt certificate"
+    echo "  - Press Enter to use the server IP and generate a self-signed certificate"
+    echo ""
+    setup_transport_web_stack "/usr/local/etc/ssh-ws/certs"
 
-    mkdir -p /usr/local/etc/ssh-ws
+    local SSH_TLS_CERT_TYPE="Let's Encrypt"
+    if [[ "$CLIENT_ALLOW_INSECURE" == "true" ]]; then
+        SSH_TLS_CERT_TYPE="Self-signed"
+    fi
+
+    local SSH_WS_BACKEND_CHOICE
+    local SSH_WS_BACKEND_MODE="direct-ssh"
+    local SSH_WS_TARGET_PORT=22
+    local SSH_WS_STUNNEL_BACKEND_PORT=""
+
+    echo -e "${CYAN}WebSocket Backend Target:${NC}"
+    echo -e " ${CYAN}1.${NC} Forward WebSocket traffic directly to SSH port 22"
+    echo -e " ${CYAN}2.${NC} Forward WebSocket traffic to a local stunnel TLS backend"
+    print_prompt "Choose backend [default: 1]:"
+    read -r SSH_WS_BACKEND_CHOICE
+    SSH_WS_BACKEND_CHOICE="${SSH_WS_BACKEND_CHOICE:-1}"
+
+    if [[ "$SSH_WS_BACKEND_CHOICE" == "2" ]]; then
+        SSH_WS_BACKEND_MODE="stunnel-local"
+        print_prompt "Enter local stunnel backend port for WebSocket forwarding [default: 8443]:"
+        read -r SSH_WS_STUNNEL_BACKEND_PORT
+        SSH_WS_STUNNEL_BACKEND_PORT="${SSH_WS_STUNNEL_BACKEND_PORT:-8443}"
+
+        if ! [[ "$SSH_WS_STUNNEL_BACKEND_PORT" =~ ^[0-9]+$ ]] || (( SSH_WS_STUNNEL_BACKEND_PORT < 1 || SSH_WS_STUNNEL_BACKEND_PORT > 65535 )); then
+            print_error "Invalid stunnel backend port: $SSH_WS_STUNNEL_BACKEND_PORT"
+            read -p "Press Enter to continue..."
+            return 1
+        fi
+
+        if [[ "$SSH_WS_STUNNEL_BACKEND_PORT" == "$SSH_SSL_PORT" ]] || [[ "$SSH_WS_STUNNEL_BACKEND_PORT" == "$SSH_WS_PORT" ]]; then
+            print_error "Local stunnel backend port must be different from the public SSL/TLS and WebSocket ports"
+            read -p "Press Enter to continue..."
+            return 1
+        fi
+
+        SSH_WS_TARGET_PORT="$SSH_WS_STUNNEL_BACKEND_PORT"
+    fi
+
+    print_info "Configuring SSH daemon for tunneling..."
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.vpn-gaming 2>/dev/null || true
+    sed -i '/# VPN Gaming SSH WS START/,/# VPN Gaming SSH WS END/d' /etc/ssh/sshd_config
+
+    cat >> /etc/ssh/sshd_config << 'EOF'
+
+# VPN Gaming SSH WS START
+PasswordAuthentication yes
+PubkeyAuthentication yes
+PermitRootLogin prohibit-password
+AllowTcpForwarding yes
+PermitTunnel yes
+AllowAgentForwarding no
+X11Forwarding no
+GatewayPorts no
+ClientAliveInterval 120
+ClientAliveCountMax 2
+UseDNS no
+
+Match Group ssh-ws-users
+    PasswordAuthentication yes
+    PubkeyAuthentication yes
+    AllowTcpForwarding yes
+    PermitTunnel yes
+    AllowAgentForwarding no
+    X11Forwarding no
+    PermitTTY no
+# VPN Gaming SSH WS END
+EOF
+
+    if systemctl list-unit-files 2>/dev/null | grep -q '^ssh\.service'; then
+        systemctl enable ssh > /dev/null 2>&1
+        systemctl restart ssh
+    else
+        systemctl enable sshd > /dev/null 2>&1
+        systemctl restart sshd
+    fi
+    print_success "SSH daemon configured for tunneling"
+
+    print_info "Creating SSH user accounts..."
+    local CREATED_USERS=()
+    while true; do
+        local SSH_WS_USERNAME=""
+        local SSH_WS_PASSWORD=""
+        local UPDATE_EXISTING="no"
+
+        print_prompt "Enter SSH username:"
+        read -r SSH_WS_USERNAME
+
+        if [[ -z "$SSH_WS_USERNAME" ]]; then
+            print_warning "Username cannot be empty"
+            continue
+        fi
+
+        if ! [[ "$SSH_WS_USERNAME" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+            print_warning "Username may only contain letters, numbers, dot, underscore, or dash"
+            continue
+        fi
+
+        while true; do
+            print_prompt "Enter password for $SSH_WS_USERNAME:"
+            read -rsp "" SSH_WS_PASSWORD
+            echo ""
+            if [[ -z "$SSH_WS_PASSWORD" ]]; then
+                print_warning "Password cannot be empty"
+            else
+                break
+            fi
+        done
+
+        if id "$SSH_WS_USERNAME" >/dev/null 2>&1; then
+            print_warning "User $SSH_WS_USERNAME already exists. Updating password and SSH tunnel settings..."
+            UPDATE_EXISTING="yes"
+            echo "$SSH_WS_USERNAME:$SSH_WS_PASSWORD" | chpasswd
+            usermod -aG ssh-ws-users "$SSH_WS_USERNAME" 2>/dev/null || true
+            usermod -s /usr/local/bin/ssh-ws-shell "$SSH_WS_USERNAME" 2>/dev/null || true
+        else
+            useradd -m -s /usr/local/bin/ssh-ws-shell -G ssh-ws-users "$SSH_WS_USERNAME"
+            echo "$SSH_WS_USERNAME:$SSH_WS_PASSWORD" | chpasswd
+            grep -qx "$SSH_WS_USERNAME" /usr/local/etc/ssh-ws/users.list 2>/dev/null || echo "$SSH_WS_USERNAME" >> /usr/local/etc/ssh-ws/users.list
+        fi
+
+        CREATED_USERS+=("$SSH_WS_USERNAME:$SSH_WS_PASSWORD")
+        if [[ "$UPDATE_EXISTING" == "yes" ]]; then
+            if grep -qx "$SSH_WS_USERNAME" /usr/local/etc/ssh-ws/users.list 2>/dev/null; then
+                print_success "Updated SSH tunnel user: $SSH_WS_USERNAME"
+            else
+                print_success "Updated existing system user: $SSH_WS_USERNAME"
+                print_warning "This pre-existing user will not be auto-deleted during uninstall"
+            fi
+        else
+            print_success "Created SSH tunnel user: $SSH_WS_USERNAME"
+        fi
+
+        print_prompt "Create another SSH user? (yes/no) [default: no]:"
+        local ADD_ANOTHER
+        read -r ADD_ANOTHER
+        case "$ADD_ANOTHER" in
+            y|Y|yes|YES)
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    if [[ ${#CREATED_USERS[@]} -eq 0 ]]; then
+        print_error "No SSH users were created"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    print_info "Configuring stunnel4 for SSH over SSL/TLS..."
+    mkdir -p /var/log/stunnel4 /var/run/stunnel4
+    chown stunnel4:stunnel4 /var/log/stunnel4 /var/run/stunnel4 2>/dev/null || true
+    if [[ -f /etc/default/stunnel4 ]]; then
+        sed -i 's/^ENABLED=.*/ENABLED=1/' /etc/default/stunnel4
+        grep -q '^ENABLED=' /etc/default/stunnel4 || echo 'ENABLED=1' >> /etc/default/stunnel4
+    else
+        echo 'ENABLED=1' > /etc/default/stunnel4
+    fi
+
+    cat > /etc/stunnel/ssh-ws.conf << EOF
+pid = /var/run/stunnel4/ssh-ws.pid
+setuid = stunnel4
+setgid = stunnel4
+foreground = no
+output = /var/log/stunnel4/ssh-ws.log
+socket = l:TCP_NODELAY=1
+socket = r:TCP_NODELAY=1
+cert = $CERT_PATH
+key = $KEY_PATH
+client = no
+
+[ssh-ssl]
+accept = $SSH_SSL_PORT
+connect = 127.0.0.1:22
+TIMEOUTclose = 0
+EOF
+
+    if [[ "$SSH_WS_BACKEND_MODE" == "stunnel-local" ]]; then
+        cat >> /etc/stunnel/ssh-ws.conf << EOF
+
+[ssh-ws-local-tls]
+accept = 127.0.0.1:$SSH_WS_STUNNEL_BACKEND_PORT
+connect = 127.0.0.1:22
+TIMEOUTclose = 0
+EOF
+    fi
+
+    cat > /usr/local/etc/ssh-ws/config.env << EOF
+SSH_WS_ENDPOINT=$REMOTE_ENDPOINT
+SSH_WS_ALLOW_INSECURE=$CLIENT_ALLOW_INSECURE
+SSH_WS_CERT_TYPE=$SSH_TLS_CERT_TYPE
+SSH_SSL_PORT=$SSH_SSL_PORT
+SSH_WS_PORT=$SSH_WS_PORT
+SSH_WS_PATH=$SSH_WS_PATH
+SSH_WS_TARGET_PORT=$SSH_WS_TARGET_PORT
+SSH_WS_BACKEND_MODE=$SSH_WS_BACKEND_MODE
+SSH_WS_STUNNEL_BACKEND_PORT=$SSH_WS_STUNNEL_BACKEND_PORT
+EOF
 
     cat > /usr/local/etc/ssh-ws/server.py << EOF
 #!/usr/bin/env python3
@@ -2148,8 +2392,8 @@ from websockets.asyncio.server import serve
 WS_HOST = "::"
 WS_PORT = int(${SSH_WS_PORT})
 WS_PATH = "${SSH_WS_PATH}"
-SSH_HOST = "127.0.0.1"
-SSH_PORT = 22
+TARGET_HOST = "127.0.0.1"
+TARGET_PORT = int(${SSH_WS_TARGET_PORT})
 
 async def bridge(websocket):
     parsed = urlparse(websocket.request.path)
@@ -2157,7 +2401,7 @@ async def bridge(websocket):
         await websocket.close(code=1008, reason="Invalid WebSocket path")
         return
 
-    reader, writer = await asyncio.open_connection(SSH_HOST, SSH_PORT)
+    reader, writer = await asyncio.open_connection(TARGET_HOST, TARGET_PORT)
 
     async def ws_to_tcp():
         try:
@@ -2194,7 +2438,7 @@ async def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_event.set)
 
-    async with serve(bridge, WS_HOST, WS_PORT):
+    async with serve(bridge, WS_HOST, WS_PORT, max_size=None, ping_interval=None):
         await stop_event.wait()
 
 if __name__ == "__main__":
@@ -2206,7 +2450,7 @@ EOF
     cat > /etc/systemd/system/ssh-ws.service << EOF
 [Unit]
 Description=SSH over WebSocket Proxy
-After=network-online.target ssh.service sshd.service
+After=network-online.target ssh.service sshd.service stunnel4.service
 Wants=network-online.target
 
 [Service]
@@ -2220,10 +2464,14 @@ WantedBy=multi-user.target
 EOF
 
     if command -v iptables &> /dev/null; then
+        iptables -C INPUT -p tcp --dport "$SSH_SSL_PORT" -j ACCEPT 2>/dev/null || \
+            iptables -A INPUT -p tcp --dport "$SSH_SSL_PORT" -j ACCEPT
         iptables -C INPUT -p tcp --dport "$SSH_WS_PORT" -j ACCEPT 2>/dev/null || \
             iptables -A INPUT -p tcp --dport "$SSH_WS_PORT" -j ACCEPT
     fi
     if command -v ip6tables &> /dev/null; then
+        ip6tables -C INPUT -p tcp --dport "$SSH_SSL_PORT" -j ACCEPT 2>/dev/null || \
+            ip6tables -A INPUT -p tcp --dport "$SSH_SSL_PORT" -j ACCEPT
         ip6tables -C INPUT -p tcp --dport "$SSH_WS_PORT" -j ACCEPT 2>/dev/null || \
             ip6tables -A INPUT -p tcp --dport "$SSH_WS_PORT" -j ACCEPT
     fi
@@ -2236,9 +2484,18 @@ EOF
     fi
 
     systemctl daemon-reload
+    systemctl enable stunnel4 > /dev/null 2>&1
+    systemctl restart stunnel4
     systemctl enable ssh-ws > /dev/null 2>&1
     systemctl restart ssh-ws
     sleep 2
+
+    if ! systemctl is-active --quiet stunnel4; then
+        print_error "Failed to start stunnel4 service"
+        journalctl -u stunnel4 -n 20 --no-pager
+        read -p "Press Enter to continue..."
+        return 1
+    fi
 
     if ! systemctl is-active --quiet ssh-ws; then
         print_error "Failed to start SSH over WebSocket service"
@@ -2253,47 +2510,103 @@ EOF
     local SERVER_IPV6=$(get_main_ipv6)
     local IPV4_URL_HOST=$(format_ip_for_url "$SERVER_IPV4")
     local IPV6_URL_HOST=$(format_ip_for_url "$SERVER_IPV6")
+    local DISPLAY_ENDPOINT="$REMOTE_ENDPOINT"
 
     cat > "$CLIENT_DIR/ssh-ws-credentials.txt" << EOF
-SSH over WebSocket Server Information
-=====================================
+SSH + SSL/WS Server Information (Advanced v3.2)
+===============================================
+Remote Endpoint: $DISPLAY_ENDPOINT
 Server (IPv4): $SERVER_IPV4
 Server (IPv6): ${SERVER_IPV6:-N/A}
 SSH Port: 22
+SSL/TLS Port: $SSH_SSL_PORT
 WebSocket Port: $SSH_WS_PORT
 WebSocket Path: $SSH_WS_PATH
-Username: root
+WebSocket Backend: $SSH_WS_BACKEND_MODE
+TLS Certificate: $SSH_TLS_CERT_TYPE
+Allow Insecure: $CLIENT_ALLOW_INSECURE
 
-Usage Notes:
-- Use your server root password or SSH key for authentication.
-- Configure your SSH client or tunneling app to connect via WebSocket first, then forward to SSH port 22.
-- Example endpoint (IPv4): ws://${IPV4_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH
+SSH Accounts:
+EOF
+
+    local ACCOUNT_ENTRY
+    for ACCOUNT_ENTRY in "${CREATED_USERS[@]}"; do
+        local ACCOUNT_USER="${ACCOUNT_ENTRY%%:*}"
+        local ACCOUNT_PASS="${ACCOUNT_ENTRY#*:}"
+        cat >> "$CLIENT_DIR/ssh-ws-credentials.txt" << EOF
+- Username: $ACCOUNT_USER | Password: $ACCOUNT_PASS
+EOF
+    done
+
+    cat >> "$CLIENT_DIR/ssh-ws-credentials.txt" << EOF
+
+Connection Notes:
+- Standard SSH: connect to port 22 with one of the accounts above.
+- SSH over SSL/TLS: connect to $DISPLAY_ENDPOINT:$SSH_SSL_PORT and use the same SSH username/password.
+- SSH over WebSocket: connect your tunneling app to ws://$DISPLAY_ENDPOINT:$SSH_WS_PORT$SSH_WS_PATH
+- TLS SNI / Host header: $DISPLAY_ENDPOINT
+- If using a self-signed certificate, set Allow Insecure / Skip TLS Verify: $CLIENT_ALLOW_INSECURE
+
+HTTP Injector / HTTP Custom Example Payload:
+GET $SSH_WS_PATH HTTP/1.1[crlf]
+Host: $DISPLAY_ENDPOINT:$SSH_WS_PORT[crlf]
+Upgrade: websocket[crlf]
+Connection: Upgrade[crlf]
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==[crlf]
+Sec-WebSocket-Version: 13[crlf]
+X-Online-Host: $DISPLAY_ENDPOINT[crlf]
+User-Agent: Mozilla/5.0[crlf]
+[crlf]
+
+Example Endpoints:
+- WS (IPv4): ws://${IPV4_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH
+- SSL/TLS (IPv4): $IPV4_URL_HOST:$SSH_SSL_PORT
 EOF
 
     if [[ -n "$SERVER_IPV6" ]]; then
         cat >> "$CLIENT_DIR/ssh-ws-credentials.txt" << EOF
-- Example endpoint (IPv6): ws://${IPV6_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH
+- WS (IPv6): ws://${IPV6_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH
+- SSL/TLS (IPv6): $IPV6_URL_HOST:$SSH_SSL_PORT
+EOF
+    fi
+
+    if [[ "$SSH_WS_BACKEND_MODE" == "stunnel-local" ]]; then
+        cat >> "$CLIENT_DIR/ssh-ws-credentials.txt" << EOF
+
+Internal Notes:
+- WebSocket traffic is forwarded to local stunnel backend port $SSH_WS_STUNNEL_BACKEND_PORT before reaching SSH.
 EOF
     fi
 
     clear
     echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║   SSH over WebSocket Installation Complete!   ║${NC}"
+    echo -e "${GREEN}║   SSH + SSL/WS Installation Complete!         ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
     echo ""
+    echo -e "${CYAN}Remote Endpoint:${NC} $DISPLAY_ENDPOINT"
     echo -e "${CYAN}Server (IPv4):${NC} $SERVER_IPV4"
     if [[ -n "$SERVER_IPV6" ]]; then
         echo -e "${CYAN}Server (IPv6):${NC} $SERVER_IPV6"
     fi
     echo -e "${CYAN}SSH Port:${NC} 22"
+    echo -e "${CYAN}SSL/TLS Port:${NC} $SSH_SSL_PORT"
     echo -e "${CYAN}WebSocket Port:${NC} $SSH_WS_PORT"
     echo -e "${CYAN}WebSocket Path:${NC} $SSH_WS_PATH"
-    echo -e "${CYAN}Username:${NC} root"
+    echo -e "${CYAN}WebSocket Backend:${NC} $SSH_WS_BACKEND_MODE"
+    echo -e "${CYAN}TLS Certificate:${NC} $SSH_TLS_CERT_TYPE"
     echo ""
-    echo -e "${YELLOW}Example IPv4 Endpoint:${NC} ws://${IPV4_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH"
+    echo -e "${YELLOW}Created Accounts:${NC}"
+    for ACCOUNT_ENTRY in "${CREATED_USERS[@]}"; do
+        local ACCOUNT_USER="${ACCOUNT_ENTRY%%:*}"
+        local ACCOUNT_PASS="${ACCOUNT_ENTRY#*:}"
+        echo -e "  - ${CYAN}Username:${NC} $ACCOUNT_USER  ${CYAN}Password:${NC} $ACCOUNT_PASS"
+    done
+    echo ""
+    echo -e "${YELLOW}Example WS Endpoint:${NC} ws://${IPV4_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH"
     if [[ -n "$SERVER_IPV6" ]]; then
-        echo -e "${YELLOW}Example IPv6 Endpoint:${NC} ws://${IPV6_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH"
+        echo -e "${YELLOW}Example WS Endpoint (IPv6):${NC} ws://${IPV6_URL_HOST}:$SSH_WS_PORT$SSH_WS_PATH"
     fi
+    echo -e "${YELLOW}SSL/TLS Endpoint:${NC} $DISPLAY_ENDPOINT:$SSH_SSL_PORT"
     echo ""
     print_info "Credentials saved to: $CLIENT_DIR/ssh-ws-credentials.txt"
     echo ""
@@ -3827,17 +4140,22 @@ view_connection_info() {
         echo ""
     fi
 
-    # Show SSH over WebSocket
-    if systemctl is-active --quiet ssh-ws; then
-        echo -e "${CYAN}=== SSH + WS (Main) ===${NC}"
+    # Show SSH + SSL/WS
+    local SSH_SSLWS_ACTIVE=false
+    if systemctl is-active --quiet ssh-ws || { systemctl is-active --quiet stunnel4 && [[ -f /etc/stunnel/ssh-ws.conf ]]; }; then
+        SSH_SSLWS_ACTIVE=true
+        echo -e "${CYAN}=== SSH + SSL/WS (Main) ===${NC}"
         if [[ -f "$CLIENT_DIR/ssh-ws-credentials.txt" ]]; then
             cat "$CLIENT_DIR/ssh-ws-credentials.txt"
             echo ""
         fi
+        echo -e "Service Status:"
+        echo -e "  - stunnel4: $(systemctl is-active stunnel4 2>/dev/null || echo inactive)"
+        echo -e "  - ssh-ws: $(systemctl is-active ssh-ws 2>/dev/null || echo inactive)"
         echo ""
     fi
 
-    if ! systemctl is-active --quiet trojan && ! systemctl is-active --quiet xray && ! systemctl is-active --quiet trojan-go && ! systemctl is-active --quiet xray-ws && ! systemctl is-active --quiet xray-httpupgrade && ! systemctl is-active --quiet xray-grpc-reality && ! systemctl is-active --quiet ssh-ws && [[ ! -f /etc/systemd/system/trojan-*.service ]] && [[ ! -f /etc/systemd/system/xray-*.service ]]; then
+    if ! systemctl is-active --quiet trojan && ! systemctl is-active --quiet xray && ! systemctl is-active --quiet trojan-go && ! systemctl is-active --quiet xray-ws && ! systemctl is-active --quiet xray-httpupgrade && ! systemctl is-active --quiet xray-grpc-reality && [[ "$SSH_SSLWS_ACTIVE" == false ]] && [[ ! -f /etc/systemd/system/trojan-*.service ]] && [[ ! -f /etc/systemd/system/xray-*.service ]]; then
         print_warning "No VPN services are currently running"
     fi
 
@@ -4450,14 +4768,49 @@ uninstall_vpn() {
         print_success "Xray REALITY + gRPC service removed"
     fi
 
-    # Remove SSH over WebSocket service/config
-    if [[ -f /etc/systemd/system/ssh-ws.service ]]; then
-        print_info "Removing SSH over WebSocket service..."
+    # Remove SSH + SSL/WS service/config
+    if [[ -f /etc/systemd/system/ssh-ws.service ]] || [[ -f /etc/stunnel/ssh-ws.conf ]] || [[ -d /usr/local/etc/ssh-ws ]]; then
+        print_info "Removing SSH + SSL/WS services and configuration..."
+
+        if [[ -f /usr/local/etc/ssh-ws/users.list ]]; then
+            while IFS= read -r SSH_WS_USER; do
+                if [[ -n "$SSH_WS_USER" ]] && id "$SSH_WS_USER" >/dev/null 2>&1; then
+                    userdel -r "$SSH_WS_USER" > /dev/null 2>&1 || userdel "$SSH_WS_USER" > /dev/null 2>&1
+                    print_success "Removed SSH user $SSH_WS_USER"
+                fi
+            done < /usr/local/etc/ssh-ws/users.list
+        fi
+
+        if getent group ssh-ws-users > /dev/null 2>&1; then
+            groupdel ssh-ws-users > /dev/null 2>&1 || true
+        fi
+
         systemctl stop ssh-ws > /dev/null 2>&1
         systemctl disable ssh-ws > /dev/null 2>&1
         rm -f /etc/systemd/system/ssh-ws.service
+
+        if [[ -f /etc/stunnel/ssh-ws.conf ]]; then
+            rm -f /etc/stunnel/ssh-ws.conf
+        fi
+
+        sed -i '/# VPN Gaming SSH WS START/,/# VPN Gaming SSH WS END/d' /etc/ssh/sshd_config
         rm -rf /usr/local/etc/ssh-ws
-        print_success "SSH over WebSocket service removed"
+        rm -f /usr/local/bin/ssh-ws-shell
+
+        if compgen -G "/etc/stunnel/*.conf" > /dev/null; then
+            systemctl restart stunnel4 > /dev/null 2>&1
+        else
+            systemctl stop stunnel4 > /dev/null 2>&1
+            systemctl disable stunnel4 > /dev/null 2>&1
+        fi
+
+        if systemctl list-unit-files 2>/dev/null | grep -q '^ssh\.service'; then
+            systemctl restart ssh > /dev/null 2>&1
+        else
+            systemctl restart sshd > /dev/null 2>&1
+        fi
+
+        print_success "SSH + SSL/WS service removed"
     fi
 
     # Remove client configs
@@ -4707,7 +5060,7 @@ show_menu() {
     echo -e " ${CYAN} 4.${NC} Install Xray (VLESS + WS + TLS)"
     echo -e " ${CYAN} 5.${NC} Install Xray (VLESS + HTTPUpgrade + TLS)"
     echo -e " ${CYAN} 6.${NC} Install Xray (VLESS + REALITY + gRPC)"
-    echo -e " ${CYAN} 7.${NC} Install SSH + WS"
+    echo -e " ${CYAN} 7.${NC} Install SSH + SSL/WS"
     echo -e " ${CYAN} 8.${NC} Add Trojan on Additional IP (IPv4/IPv6)"
     echo -e " ${CYAN} 9.${NC} Add Xray on Additional IP (IPv4/IPv6)"
     echo -e " ${CYAN}10.${NC} Switch Protocol (Trojan <-> Xray)"
@@ -4779,15 +5132,21 @@ show_menu() {
             echo -e "${GREEN}[✓]${NC} Xray REALITY + gRPC: Running"
         fi
     fi
+    if systemctl is-active --quiet stunnel4 && [[ -f /etc/stunnel/ssh-ws.conf ]]; then
+        local ssh_ssl_port=$(grep '^SSH_SSL_PORT=' /usr/local/etc/ssh-ws/config.env 2>/dev/null | cut -d= -f2-)
+        echo -e "${GREEN}[✓]${NC} SSH SSL/TLS (stunnel): Running on port ${ssh_ssl_port:-443}"
+    fi
     if systemctl is-active --quiet ssh-ws; then
-        local ssh_ws_bind=$(ss -tlnp | grep '/usr/local/etc/ssh-ws/server.py' | awk '{print $4}' | head -1)
-        if [[ -z "$ssh_ws_bind" ]]; then
-            ssh_ws_bind=$(ss -tlnp | grep 'python3' | awk '{print $4}' | head -1)
+        local ssh_ws_port=$(grep '^SSH_WS_PORT=' /usr/local/etc/ssh-ws/config.env 2>/dev/null | cut -d= -f2-)
+        local ssh_ws_path=$(grep '^SSH_WS_PATH=' /usr/local/etc/ssh-ws/config.env 2>/dev/null | cut -d= -f2-)
+        local ssh_ws_bind=""
+        if [[ -n "$ssh_ws_port" ]]; then
+            ssh_ws_bind=$(ss -tln | awk -v port=":$ssh_ws_port" '$4 ~ port"$" {print $4; exit}')
         fi
         if echo "$ssh_ws_bind" | grep -q '^\*:' || echo "$ssh_ws_bind" | grep -q '^\[::\]:'; then
-            echo -e "${GREEN}[✓]${NC} SSH + WS: Running (IPv4+IPv6)"
+            echo -e "${GREEN}[✓]${NC} SSH WebSocket: Running on port ${ssh_ws_port:-configured} ${ssh_ws_path:+(path $ssh_ws_path)} (IPv4+IPv6)"
         else
-            echo -e "${GREEN}[✓]${NC} SSH + WS: Running"
+            echo -e "${GREEN}[✓]${NC} SSH WebSocket: Running on port ${ssh_ws_port:-configured} ${ssh_ws_path:+(path $ssh_ws_path)}"
         fi
     fi
 
