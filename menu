@@ -688,11 +688,7 @@ stop_conflicting_vpn_services() {
     print_info "Stopping active VPN services that conflict on TCP/443..."
     local stopped_any=false
 
-<<<<<<< HEAD
     for svc in trojan xray trojan-go xray-ws xray-httpupgrade xray-grpc-reality; do
-=======
-    for svc in trojan xray trojan-go xray-httpupgrade xray-grpc-reality; do
->>>>>>> d21f08c2c1c07752dbd7eaf59b9d863bf15b348d
         if systemctl is-active --quiet "$svc" 2>/dev/null; then
             systemctl stop "$svc"
             print_warning "Stopped $svc to free TCP/443"
@@ -1360,7 +1356,6 @@ EOF
     read -p "Press Enter to continue..."
 }
 
-<<<<<<< HEAD
 install_xray_vless_ws_tls() {
     clear
     echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
@@ -1627,8 +1622,6 @@ EOF
     echo ""
     read -p "Press Enter to continue..."
 }
-=======
->>>>>>> d21f08c2c1c07752dbd7eaf59b9d863bf15b348d
 
 install_xray_reality_grpc() {
     clear
@@ -3588,7 +3581,6 @@ view_connection_info() {
         echo ""
     fi
 
-<<<<<<< HEAD
     # Show Xray WS+TLS
     if systemctl is-active --quiet xray-ws; then
         echo -e "${CYAN}=== Xray VLESS WS+TLS (Main) ===${NC}"
@@ -3603,8 +3595,6 @@ view_connection_info() {
         echo ""
     fi
 
-=======
->>>>>>> d21f08c2c1c07752dbd7eaf59b9d863bf15b348d
     # Show Xray HTTPUpgrade+TLS
     if systemctl is-active --quiet xray-httpupgrade; then
         echo -e "${CYAN}=== Xray VLESS HTTPUpgrade+TLS (Main) ===${NC}"
@@ -3633,11 +3623,7 @@ view_connection_info() {
         echo ""
     fi
 
-<<<<<<< HEAD
     if ! systemctl is-active --quiet trojan && ! systemctl is-active --quiet xray && ! systemctl is-active --quiet trojan-go && ! systemctl is-active --quiet xray-ws && ! systemctl is-active --quiet xray-httpupgrade && ! systemctl is-active --quiet xray-grpc-reality && [[ ! -f /etc/systemd/system/trojan-*.service ]] && [[ ! -f /etc/systemd/system/xray-*.service ]]; then
-=======
-    if ! systemctl is-active --quiet trojan && ! systemctl is-active --quiet xray && ! systemctl is-active --quiet trojan-go && ! systemctl is-active --quiet xray-httpupgrade && ! systemctl is-active --quiet xray-grpc-reality && [[ ! -f /etc/systemd/system/trojan-*.service ]] && [[ ! -f /etc/systemd/system/xray-*.service ]]; then
->>>>>>> d21f08c2c1c07752dbd7eaf59b9d863bf15b348d
         print_warning "No VPN services are currently running"
     fi
 
@@ -3690,7 +3676,6 @@ optimize_for_gaming() {
             print_success "Trojan-Go restarted"
         fi
     fi
-<<<<<<< HEAD
     if systemctl is-active --quiet xray-ws; then
         print_info "Restarting Xray WS+TLS to apply optimizations..."
         systemctl restart xray-ws
@@ -3699,8 +3684,6 @@ optimize_for_gaming() {
             print_success "Xray WS+TLS restarted"
         fi
     fi
-=======
->>>>>>> d21f08c2c1c07752dbd7eaf59b9d863bf15b348d
     if systemctl is-active --quiet xray-httpupgrade; then
         print_info "Restarting Xray HTTPUpgrade to apply optimizations..."
         systemctl restart xray-httpupgrade
@@ -3979,11 +3962,7 @@ ipv6_diagnostics() {
 
     # Quick fix option
     echo -e "${CYAN}=== Quick Fix ===${NC}"
-<<<<<<< HEAD
     echo "  If IPv6 is not working, run option 11 (Gaming Optimization)"
-=======
-    echo "  If IPv6 is not working, run option 7 (Gaming Optimization)"
->>>>>>> d21f08c2c1c07752dbd7eaf59b9d863bf15b348d
     echo "  It will automatically fix kernel settings and firewall rules"
     echo ""
 
@@ -4227,7 +4206,6 @@ uninstall_vpn() {
         print_success "Trojan-Go removed"
     fi
 
-<<<<<<< HEAD
     # Remove Xray WS service/config
     if [[ -f /etc/systemd/system/xray-ws.service ]]; then
         print_info "Removing Xray WS service..."
@@ -4238,8 +4216,6 @@ uninstall_vpn() {
         print_success "Xray WS service removed"
     fi
 
-=======
->>>>>>> d21f08c2c1c07752dbd7eaf59b9d863bf15b348d
     # Remove advanced Xray HTTPUpgrade service/config
     if [[ -f /etc/systemd/system/xray-httpupgrade.service ]]; then
         print_info "Removing Xray HTTPUpgrade service..."
@@ -4502,7 +4478,6 @@ show_menu() {
     echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e " ${CYAN} 1.${NC} Install Trojan-GFW (Universal Dual-Stack)"
-<<<<<<< HEAD
     echo -e " ${CYAN} 2.${NC} Install Trojan-Go (WS + TLS + Mux)"
     echo -e " ${CYAN} 3.${NC} Install Xray (VLESS + XTLS-Reality, Universal)"
     echo -e " ${CYAN} 4.${NC} Install Xray (VLESS + WS + TLS)"
@@ -4517,21 +4492,6 @@ show_menu() {
     echo -e " ${CYAN}13.${NC} IPv6 Diagnostics & Status"
     echo -e " ${CYAN}14.${NC} Repair Dual-Stack (Fix IPv6 Issues)"
     echo -e " ${CYAN}15.${NC} Uninstall"
-=======
-    echo -e " ${CYAN} 2.${NC} Install Xray (VLESS + XTLS-Reality, Universal)"
-    echo -e " ${CYAN} 3.${NC} Add Trojan on Additional IP (IPv4/IPv6)"
-    echo -e " ${CYAN} 4.${NC} Add Xray on Additional IP (IPv4/IPv6)"
-    echo -e " ${CYAN} 5.${NC} Switch Protocol (Trojan <-> Xray)"
-    echo -e " ${CYAN} 6.${NC} View Connection Info"
-    echo -e " ${CYAN} 7.${NC} Optimize for Gaming (BBR + Dual-Stack Tweaks)"
-    echo -e " ${CYAN} 8.${NC} Speed & Latency Test (IPv4 vs IPv6)"
-    echo -e " ${CYAN} 9.${NC} IPv6 Diagnostics & Status"
-    echo -e " ${CYAN}10.${NC} Repair Dual-Stack (Fix IPv6 Issues)"
-    echo -e " ${CYAN}11.${NC} Uninstall"
-    echo -e " ${CYAN}12.${NC} Install Trojan-Go (WS + TLS + Mux)"
-    echo -e " ${CYAN}13.${NC} Install Xray (VLESS + HTTPUpgrade + TLS)"
-    echo -e " ${CYAN}14.${NC} Install Xray (VLESS + REALITY + gRPC)"
->>>>>>> d21f08c2c1c07752dbd7eaf59b9d863bf15b348d
     echo -e " ${CYAN} 0.${NC} Exit"
     echo ""
 
@@ -4561,7 +4521,6 @@ show_menu() {
             echo -e "${GREEN}[✓]${NC} Trojan-Go: Running"
         fi
     fi
-<<<<<<< HEAD
     if systemctl is-active --quiet xray-ws; then
         local xray_ws_bind=$(ss -tlnp | grep 'ws-config.json' | awk '{print $4}' | head -1)
         if [[ -z "$xray_ws_bind" ]]; then
@@ -4573,8 +4532,6 @@ show_menu() {
             echo -e "${GREEN}[✓]${NC} Xray WS+TLS: Running"
         fi
     fi
-=======
->>>>>>> d21f08c2c1c07752dbd7eaf59b9d863bf15b348d
     if systemctl is-active --quiet xray-httpupgrade; then
         local xray_http_bind=$(ss -tlnp | grep 'httpupgrade-config.json' | awk '{print $4}' | head -1)
         if [[ -z "$xray_http_bind" ]]; then
@@ -4656,16 +4613,11 @@ main() {
     # Main loop
     while true; do
         show_menu
-<<<<<<< HEAD
         print_prompt "Enter your choice (0-15):"
-=======
-        print_prompt "Enter your choice (0-14):"
->>>>>>> d21f08c2c1c07752dbd7eaf59b9d863bf15b348d
         read -r CHOICE
 
         case $CHOICE in
             1) install_trojan ;;
-<<<<<<< HEAD
             2) install_trojan_go_ws_tls ;;
             3) install_xray ;;
             4) install_xray_vless_ws_tls ;;
@@ -4680,21 +4632,6 @@ main() {
             13) ipv6_diagnostics ;;
             14) repair_dual_stack ;;
             15) uninstall_vpn ;;
-=======
-            2) install_xray ;;
-            3) add_trojan_on_ip ;;
-            4) add_xray_on_ip ;;
-            5) switch_protocol ;;
-            6) view_connection_info ;;
-            7) optimize_for_gaming ;;
-            8) speed_test ;;
-            9) ipv6_diagnostics ;;
-            10) repair_dual_stack ;;
-            11) uninstall_vpn ;;
-            12) install_trojan_go_ws_tls ;;
-            13) install_xray_httpupgrade_tls ;;
-            14) install_xray_reality_grpc ;;
->>>>>>> d21f08c2c1c07752dbd7eaf59b9d863bf15b348d
             0)
                 clear
                 print_success "Thank you for using VPN Gaming Autoscript v$SCRIPT_VERSION (Universal)!"
